@@ -28,22 +28,31 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [loading, setLoading] = useState(true);
 
   const fetchProfile = async (userId: string) => {
-    const { data: profileData } = await supabase
-      .from("profiles")
-      .select("full_name, approval_status, phone")
-      .eq("user_id", userId)
-      .maybeSingle();
-    setProfile(profileData);
+    try {
+      const { data: profileData } = await supabase
+        .from("profiles")
+        .select("full_name, approval_status, phone")
+        .eq("user_id", userId)
+        .maybeSingle();
+      setProfile(profileData);
 
-    const { data: roleData } = await supabase
-      .from("user_roles")
-      .select("role")
-      .eq("user_id", userId);
-    setIsAdmin(roleData?.some((r) => r.role === "admin") ?? false);
+      const { data: roleData } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId);
+      setIsAdmin(roleData?.some((r) => r.role === "admin") ?? false);
+    } catch (e) {
+      console.error("fetchProfile error:", e);
+    }
   };
 
   useEffect(() => {
     let mounted = true;
+
+    // Safety timeout - never stay loading forever
+    const timeout = setTimeout(() => {
+      if (mounted) setLoading(false);
+    }, 5000);
 
     // First restore session from storage
     supabase.auth.getSession().then(async ({ data: { session } }) => {
@@ -56,6 +65,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         setProfile(null);
         setIsAdmin(false);
       }
+      if (mounted) {
+        setLoading(false);
+        clearTimeout(timeout);
+      }
+    }).catch(() => {
       if (mounted) setLoading(false);
     });
 
@@ -75,6 +89,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     return () => {
       mounted = false;
+      clearTimeout(timeout);
       subscription.unsubscribe();
     };
   }, []);
