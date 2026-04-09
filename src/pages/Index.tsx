@@ -14,6 +14,9 @@ interface ReceiptData {
   date: string;
   totalArea: number;
   commission: number;
+  analysisPath?: string;
+  notes?: string;
+  items?: Array<{ description?: string; area_m2?: number; quantity?: number; total_area_m2?: number }>;
 }
 
 const Index = () => {
@@ -30,6 +33,7 @@ const Index = () => {
     setDrawerOpen(true);
     setIsProcessing(true);
     setIsDuplicate(false);
+    setReceiptData(null);
 
     try {
       const { data, error } = await supabase.functions.invoke("analyze-receipt", {
@@ -39,15 +43,18 @@ const Index = () => {
       if (error) {
         toast.error("خطأ في تحليل الإيصال");
         setDrawerOpen(false);
+        setIsProcessing(false);
         return;
       }
 
       if (data.error) {
         toast.error(data.error);
         setDrawerOpen(false);
+        setIsProcessing(false);
         return;
       }
 
+      // Check for duplicate
       if (data.receipt_number) {
         const { data: existing } = await supabase
           .from("receipts")
@@ -58,6 +65,8 @@ const Index = () => {
         if (existing) {
           setIsDuplicate(true);
           setIsProcessing(false);
+          // Haptic for duplicate
+          if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 100]);
           return;
         }
       }
@@ -68,6 +77,9 @@ const Index = () => {
         date: data.date || new Date().toLocaleDateString("ar-SD"),
         totalArea: data.total_area || 0,
         commission: data.total_commission || 0,
+        analysisPath: data.analysis_path,
+        notes: data.notes,
+        items: data.items,
       });
     } catch (e) {
       toast.error("حدث خطأ أثناء التحليل");
@@ -156,6 +168,7 @@ const Index = () => {
         data={receiptData}
         isProcessing={isProcessing}
         isDuplicate={isDuplicate}
+        capturedImage={capturedImage}
       />
     </div>
   );
