@@ -20,14 +20,29 @@ serve(async (req) => {
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
 
-    const systemPrompt = `أنت محاسب سوداني متخصص في تحليل إيصالات المطابع. مهمتك هي تحليل صورة الإيصال واستخراج البيانات التالية بدقة.
+    const systemPrompt = `أنت "المحاسب الرقمي" لشركة فيوتشر للطباعة والإعلان. دورك هو العمل كشريك مالي للمصمم والمدير، وتحليل إيصالات طلبات الطباعة المكتوبة بخط اليد بدقة بشرية متناهية.
 
-قواعد الحساب:
-- العمولة = إجمالي الأمتار × 300 جنيه سوداني لكل متر مربع
-- إذا كان المجموع الكلي مكتوباً بخط اليد، اقرأه مباشرة
-- إذا كان هناك جدول قياسات (عرض × طول)، احسب مساحة كل صف واجمعها
+أولاً: الشخصية والمهام
+أنت محاسب سوداني خبير، تفهم أن الخط قد يكون متداخلاً وأن المحاسب البشري قد يكتب المقاسات بـ (السنتيمتر) أو (المتر).
+مهمتك الأساسية: استخراج إجمالي الأمتار المربعة لكل إيصال لحساب عمولة المصمم (300 ج لكل متر مربع).
+يجب أن تكون حذراً جداً؛ الخطأ في رقم واحد يعني ضياع مال أو ظلم موظف.
 
-استخرج البيانات التالية وأعدها بالضبط بهذا التنسيق.`;
+ثانياً: استراتيجية التحليل الذكي (Multi-Scenario Analysis)
+اتبع "أقصر مسار ذكي" للوصول للنتيجة عبر السيناريوهات التالية بالترتيب:
+
+السيناريو أ (المجموع الصريح): ابحث فوراً عن خانة "الأمتار" أو "المجموع". إذا وجدتها مكتوبة بوضوح كقيمة نهائية (مثل: 404,000 ج أو 12 متر)، اعتمدها كمرجع أول.
+
+السيناريو ب (تحليل الجدول): إذا لم يوجد مجموع صريح، قم بتحليل كل سطر (القياس × الكمية).
+- إذا وجدت 570x100 وكمية 1 -> احسبها 5.7 × 1 = 5.7 متر مربع.
+- إذا وجدت 300x200 وكمية 2 -> احسبها (3 × 2) × 2 = 12 متر مربع.
+
+السيناريو ج (التحقق المتقاطع): إذا وجد المحاسب قد كتب "الأمتار" و "المقاسات"، قم بجمع المقاسات سريعاً وقارنها بالمجموع المكتوب. إذا تطابقا، اعتمد النتيجة. إذا اختلفا، أعطِ الأولوية للمجموع المكتوب يدوياً (لأنه يمثل اتفاق المحاسب مع الزبون).
+
+ثالثاً: القواعد الذهبية
+- التحويل: المقاسات في المطابع السودانية غالباً بالسنتيمتر. (100 = 1 متر). حول دائماً للمتر قبل حساب المساحة.
+- الكسور: قرب النتائج لأقرب منزلتين عشريتين.
+- المنع من التكرار: استخرج "رقم الإيصال" أو "اسم الزبون + التاريخ" لإنشاء بصمة فريدة.
+- عدم اليقين: إذا وجدت رقماً مشطوباً أو غير واضح نهائياً، ضع قيمة 0 وأشر إلى ذلك في الملاحظات.`;
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -48,7 +63,7 @@ serve(async (req) => {
               },
               {
                 type: "text",
-                text: "حلل هذا الإيصال واستخرج البيانات.",
+                text: "حلل هذا الإيصال واستخرج البيانات بدقة. اذكر أي سيناريو استخدمت (أ، ب، أو ج).",
               },
             ],
           },
@@ -58,33 +73,38 @@ serve(async (req) => {
             type: "function",
             function: {
               name: "extract_receipt_data",
-              description: "Extract structured data from a printing receipt image",
+              description: "Extract structured data from a Sudanese printing receipt image",
               parameters: {
                 type: "object",
                 properties: {
                   receipt_number: { type: "string", description: "رقم الإيصال أو الفاتورة" },
-                  client_name: { type: "string", description: "اسم العميل" },
+                  client_name: { type: "string", description: "اسم العميل/الزبون" },
                   date: { type: "string", description: "تاريخ الإيصال بصيغة YYYY-MM-DD" },
                   items: {
                     type: "array",
-                    description: "بنود الطباعة",
+                    description: "بنود الطباعة المستخرجة",
                     items: {
                       type: "object",
                       properties: {
-                        description: { type: "string" },
-                        width: { type: "number", description: "العرض بالمتر" },
-                        height: { type: "number", description: "الطول بالمتر" },
-                        area: { type: "number", description: "المساحة بالمتر المربع" },
+                        description: { type: "string", description: "وصف الصنف" },
+                        width_cm: { type: "number", description: "العرض بالسنتيمتر كما مكتوب" },
+                        height_cm: { type: "number", description: "الطول بالسنتيمتر كما مكتوب" },
+                        width_m: { type: "number", description: "العرض بالمتر بعد التحويل" },
+                        height_m: { type: "number", description: "الطول بالمتر بعد التحويل" },
+                        area_m2: { type: "number", description: "المساحة بالمتر المربع" },
                         quantity: { type: "number", description: "الكمية" },
+                        total_area_m2: { type: "number", description: "المساحة الكلية = area_m2 × quantity" },
                       },
-                      required: ["area"],
+                      required: ["area_m2"],
                     },
                   },
                   total_area: { type: "number", description: "إجمالي الأمتار المربعة" },
                   commission_rate: { type: "number", description: "سعر العمولة لكل متر = 300" },
                   total_commission: { type: "number", description: "إجمالي العمولة = total_area × 300" },
+                  analysis_path: { type: "string", enum: ["أ", "ب", "ج"], description: "أي سيناريو تحليل تم استخدامه" },
+                  notes: { type: "string", description: "ملاحظات حول أرقام غير واضحة أو مشطوبة" },
                 },
-                required: ["receipt_number", "total_area", "total_commission"],
+                required: ["receipt_number", "total_area", "total_commission", "analysis_path"],
               },
             },
           },
@@ -122,8 +142,9 @@ serve(async (req) => {
 
     const receiptData = JSON.parse(toolCall.function.arguments);
     
+    // Ensure commission is calculated
     if (receiptData.total_area && !receiptData.total_commission) {
-      receiptData.total_commission = receiptData.total_area * 300;
+      receiptData.total_commission = Math.round(receiptData.total_area * 300 * 100) / 100;
     }
     receiptData.commission_rate = 300;
 

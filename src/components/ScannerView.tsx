@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { Camera, Zap, ZapOff } from "lucide-react";
 import futureLogo from "@/assets/future-logo.png";
 import { useAuth } from "@/hooks/useAuth";
@@ -6,6 +6,23 @@ import { useAuth } from "@/hooks/useAuth";
 interface ScannerViewProps {
   onCapture: (imageData: string) => void;
 }
+
+// Compress and convert image to grayscale for faster upload & AI processing
+const compressImage = (canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D): string => {
+  // Convert to grayscale for better OCR
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+    data[i] = gray;
+    data[i + 1] = gray;
+    data[i + 2] = gray;
+  }
+  ctx.putImageData(imageData, 0, 0);
+  
+  // Compress to JPEG at 0.5 quality (~200KB instead of 5MB)
+  return canvas.toDataURL("image/jpeg", 0.5);
+};
 
 const ScannerView = ({ onCapture }: ScannerViewProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -30,16 +47,36 @@ const ScannerView = ({ onCapture }: ScannerViewProps) => {
     }
   }, []);
 
+  // Auto-open camera on mount
+  useEffect(() => {
+    startCamera();
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+      }
+    };
+  }, [startCamera]);
+
   const capturePhoto = useCallback(() => {
     if (!videoRef.current || !canvasRef.current) return;
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    
+    // Resize to max 1280px for faster processing
+    const maxDim = 1280;
+    const scale = Math.min(maxDim / video.videoWidth, maxDim / video.videoHeight, 1);
+    canvas.width = video.videoWidth * scale;
+    canvas.height = video.videoHeight * scale;
+    
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.drawImage(video, 0, 0);
-    const imageData = canvas.toDataURL("image/jpeg", 0.6);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    
+    const imageData = compressImage(canvas, ctx);
+    
+    // Haptic feedback on capture
+    if (navigator.vibrate) navigator.vibrate(50);
+    
     onCapture(imageData);
   }, [onCapture]);
 
@@ -69,12 +106,12 @@ const ScannerView = ({ onCapture }: ScannerViewProps) => {
           </>
         ) : (
           <div className="flex flex-col items-center gap-6 text-center px-8">
-            <div className="w-24 h-24 rounded-full glass-card flex items-center justify-center">
+            <div className="w-24 h-24 rounded-full glass-card flex items-center justify-center animate-pulse">
               <Camera className="h-10 w-10 text-muted-foreground" />
             </div>
             <div>
-              <h2 className="text-xl font-bold text-foreground mb-2">ماسح إيصالات فيوتشر</h2>
-              <p className="text-sm text-muted-foreground">صوّر الإيصال واحصل على عمولتك فوراً</p>
+              <h2 className="text-xl font-bold text-foreground mb-2">جاري تشغيل الكاميرا...</h2>
+              <p className="text-sm text-muted-foreground">يرجى السماح بالوصول للكاميرا</p>
             </div>
             <button onClick={startCamera}
               className="gradient-primary text-primary-foreground px-8 py-3 rounded-xl font-bold text-lg shadow-glow transition-all hover:shadow-glow-strong">
