@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import ScannerView from "@/components/ScannerView";
 import ReceiptDrawer from "@/components/ReceiptDrawer";
+import QueueIndicator from "@/components/QueueIndicator";
 import WalletView from "@/components/WalletView";
 import BottomNav from "@/components/BottomNav";
 import { supabase } from "@/integrations/supabase/client";
@@ -19,95 +20,183 @@ interface ReceiptData {
   items?: Array<{ description?: string; area_m2?: number; quantity?: number; total_area_m2?: number }>;
 }
 
+export interface QueueItem {
+  id: string;
+  imageData: string;
+  status: "queued" | "analyzing" | "analyzed" | "saving" | "done" | "error" | "duplicate";
+  receiptData?: ReceiptData;
+  error?: string;
+}
+
 const Index = () => {
   const { user, profile, signOut } = useAuth();
   const [activeTab, setActiveTab] = useState<"scanner" | "wallet" | "profile">("scanner");
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [isDuplicate, setIsDuplicate] = useState(false);
-  const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
-  const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [selectedItem, setSelectedItem] = useState<QueueItem | null>(null);
+  const processingRef = useRef(false);
 
-  const handleCapture = async (imageData: string) => {
-    setCapturedImage(imageData);
-    setDrawerOpen(true);
-    setIsProcessing(true);
-    setIsDuplicate(false);
-    setReceiptData(null);
+  // Process queue items one by one
+  const processQueue = useCallback(async () => {
+    if (processingRef.current || !user) return;
 
-    try {
-      const { data, error } = await supabase.functions.invoke("analyze-receipt", {
-        body: { image_base64: imageData },
-      });
+    setQueue(prev => {
+      const next = prev.find(i => i.status === "queued");
+      if (!next) return prev;
+      processingRef.current = true;
+      // Start processing async
+      (async () => {
+        try {
+          // Update status to analyzing
+          setQueue(q => q.map(i => i.id === next.id ? { ...i, status: "analyzing" as const } : i));
 
-      if (error) {
-        toast.error("خطأ في تحليل الإيصال");
-        setDrawerOpen(false);
-        setIsProcessing(false);
-        return;
-      }
+          const { data, error } = await supabase.functions.invoke("analyze-receipt", {
+            body: { image_base64: next.imageData },
+          });
 
-      if (data.error) {
-        toast.error(data.error);
-        setDrawerOpen(false);
-        setIsProcessing(false);
-        return;
-      }
+          if (error || data?.error) {
+            setQueue(q => q.map(i => i.id === next.id ? { ...i, status: "error" as const, error: data?.error || "خطأ في التحليل" } : i));
+            toast.error(data?.error || "خطأ في تحليل الإيصال");
+            processingRef.current = false;
+            return;
+          }
 
-      // Check for duplicate
-      if (data.receipt_number) {
-        const { data: existing } = await supabase
-          .from("receipts")
-          .select("id")
-          .eq("receipt_number", data.receipt_number)
-          .maybeSingle();
+          // Check duplicate
+          if (data.receipt_number) {
+            const { data: existing } = await supabase
+              .from("receipts")
+              .select("id")
+              .eq("receipt_number", data.receipt_number)
+              .maybeSingle();
 
-        if (existing) {
-          setIsDuplicate(true);
-          setIsProcessing(false);
-          // Haptic for duplicate
-          if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 100]);
-          return;
+            if (existing) {
+              setQueue(q => q.map(i => i.id === next.id ? { ...i, status: "duplicate" as const } : i));
+              if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+              toast.error(`إيصال مكرر: ${data.receipt_number}`);
+              processingRef.current = false;
+              return;
+            }
+          }
+
+          const receiptData: ReceiptData = {
+            receiptNumber: data.receipt_number || `RC-${Date.now()}`,
+            clientName: data.client_name || "غير محدد",
+            date: data.date || new Date().toLocaleDateString("ar-SD"),
+            totalArea: data.total_area || 0,
+            commission: data.total_commission || 0,
+            analysisPath: data.analysis_path,
+            notes: data.notes,
+            items: data.items,
+          };
+
+          setQueue(q => q.map(i => i.id === next.id ? { ...i, status: "analyzed" as const, receiptData } : i));
+          if (navigator.vibrate) navigator.vibrate(100);
+
+          // Auto-save
+          setQueue(q => q.map(i => i.id === next.id ? { ...i, status: "saving" as const } : i));
+
+          let imageUrl = null;
+          const fileName = `${user.id}/${receiptData.receiptNumber}-${Date.now()}.jpg`;
+          const base64Data = next.imageData.split(",")[1];
+          const binaryStr = atob(base64Data);
+          const bytes = new Uint8Array(binaryStr.length);
+          for (let j = 0; j < binaryStr.length; j++) bytes[j] = binaryStr.charCodeAt(j);
+
+          const { data: uploadData } = await supabase.storage
+            .from("receipt-images")
+            .upload(fileName, bytes, { contentType: "image/jpeg" });
+
+          if (uploadData) {
+            const { data: urlData } = supabase.storage.from("receipt-images").getPublicUrl(uploadData.path);
+            imageUrl = urlData.publicUrl;
+          }
+
+          const { error: insertError } = await supabase.from("receipts").insert({
+            receipt_number: receiptData.receiptNumber,
+            designer_id: user.id,
+            client_name: receiptData.clientName,
+            total_area: receiptData.totalArea,
+            commission_amount: receiptData.commission,
+            image_url: imageUrl,
+            receipt_date: new Date().toISOString().split("T")[0],
+          });
+
+          if (insertError) {
+            if (insertError.code === "23505") {
+              setQueue(q => q.map(i => i.id === next.id ? { ...i, status: "duplicate" as const } : i));
+              toast.error("إيصال مكرر!");
+            } else {
+              setQueue(q => q.map(i => i.id === next.id ? { ...i, status: "error" as const, error: "خطأ في الحفظ" } : i));
+              toast.error("خطأ في حفظ الإيصال");
+            }
+          } else {
+            setQueue(q => q.map(i => i.id === next.id ? { ...i, status: "done" as const } : i));
+            if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
+            toast.success(`✅ تم حفظ إيصال ${receiptData.receiptNumber}`);
+          }
+        } catch {
+          setQueue(q => q.map(i => i.id === next.id ? { ...i, status: "error" as const, error: "خطأ غير متوقع" } : i));
+          toast.error("حدث خطأ أثناء المعالجة");
         }
-      }
+        processingRef.current = false;
+      })();
+      return prev;
+    });
+  }, [user]);
 
-      setReceiptData({
-        receiptNumber: data.receipt_number || `RC-${Date.now()}`,
-        clientName: data.client_name || "غير محدد",
-        date: data.date || new Date().toLocaleDateString("ar-SD"),
-        totalArea: data.total_area || 0,
-        commission: data.total_commission || 0,
-        analysisPath: data.analysis_path,
-        notes: data.notes,
-        items: data.items,
-      });
-    } catch (e) {
-      toast.error("حدث خطأ أثناء التحليل");
-      setDrawerOpen(false);
+  // Trigger queue processing whenever queue changes
+  useEffect(() => {
+    const hasQueued = queue.some(i => i.status === "queued");
+    if (hasQueued && !processingRef.current) {
+      processQueue();
     }
-    setIsProcessing(false);
+  }, [queue, processQueue]);
+
+  // Re-trigger after an item finishes
+  useEffect(() => {
+    if (!processingRef.current) {
+      const hasQueued = queue.some(i => i.status === "queued");
+      if (hasQueued) {
+        const timer = setTimeout(processQueue, 300);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [queue, processQueue]);
+
+  const handleCapture = (imageData: string) => {
+    const newItem: QueueItem = {
+      id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      imageData,
+      status: "queued",
+    };
+    setQueue(prev => [...prev, newItem]);
+    // Camera stays open - no drawer blocking
   };
 
-  const handleConfirm = async (data: ReceiptData) => {
-    if (!user) return;
+  // Allow manual review of a queue item
+  const handleReviewItem = (item: QueueItem) => {
+    if (item.receiptData) {
+      setSelectedItem(item);
+    }
+  };
+
+  const handleManualConfirm = async (data: ReceiptData) => {
+    // For manual edits on analyzed items that haven't been saved yet
+    if (!user || !selectedItem) return;
 
     try {
       let imageUrl = null;
-      if (capturedImage) {
-        const fileName = `${user.id}/${data.receiptNumber}-${Date.now()}.jpg`;
-        const base64Data = capturedImage.split(",")[1];
-        const binaryStr = atob(base64Data);
-        const bytes = new Uint8Array(binaryStr.length);
-        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+      const fileName = `${user.id}/${data.receiptNumber}-${Date.now()}.jpg`;
+      const base64Data = selectedItem.imageData.split(",")[1];
+      const binaryStr = atob(base64Data);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let j = 0; j < binaryStr.length; j++) bytes[j] = binaryStr.charCodeAt(j);
 
-        const { data: uploadData } = await supabase.storage
-          .from("receipt-images")
-          .upload(fileName, bytes, { contentType: "image/jpeg" });
-
-        if (uploadData) {
-          const { data: urlData } = supabase.storage.from("receipt-images").getPublicUrl(uploadData.path);
-          imageUrl = urlData.publicUrl;
-        }
+      const { data: uploadData } = await supabase.storage
+        .from("receipt-images")
+        .upload(fileName, bytes, { contentType: "image/jpeg" });
+      if (uploadData) {
+        const { data: urlData } = supabase.storage.from("receipt-images").getPublicUrl(uploadData.path);
+        imageUrl = urlData.publicUrl;
       }
 
       const { error } = await supabase.from("receipts").insert({
@@ -121,26 +210,45 @@ const Index = () => {
       });
 
       if (error) {
-        if (error.code === "23505") {
-          toast.error("هذا الإيصال مسجل مسبقاً!");
-        } else {
-          toast.error("خطأ في حفظ الإيصال");
-        }
+        toast.error(error.code === "23505" ? "إيصال مكرر!" : "خطأ في الحفظ");
         return;
       }
 
+      setQueue(q => q.map(i => i.id === selectedItem.id ? { ...i, status: "done" as const, receiptData: data } : i));
       toast.success("تم حفظ الإيصال بنجاح ✅");
-      setDrawerOpen(false);
-      setReceiptData(null);
-      setCapturedImage(null);
+      setSelectedItem(null);
     } catch {
       toast.error("حدث خطأ أثناء الحفظ");
     }
   };
 
+  // Clean done items after 10 seconds
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setQueue(prev => prev.filter(i => {
+        if (i.status === "done") {
+          // Keep for 10s
+          const age = Date.now() - parseInt(i.id.split("-")[1]);
+          return age < 15000;
+        }
+        return true;
+      }));
+    }, 5000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const drawerItem = selectedItem;
+
   return (
     <div className="min-h-screen bg-background">
-      {activeTab === "scanner" && <ScannerView onCapture={handleCapture} />}
+      {activeTab === "scanner" && (
+        <>
+          <ScannerView onCapture={handleCapture} />
+          {queue.length > 0 && (
+            <QueueIndicator queue={queue} onReview={handleReviewItem} />
+          )}
+        </>
+      )}
       {activeTab === "wallet" && <WalletView />}
       {activeTab === "profile" && (
         <div className="flex items-center justify-center min-h-[calc(100vh-5rem)] px-6">
@@ -161,15 +269,18 @@ const Index = () => {
 
       <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
 
-      <ReceiptDrawer
-        isOpen={drawerOpen}
-        onClose={() => { setDrawerOpen(false); setReceiptData(null); setIsDuplicate(false); }}
-        onConfirm={handleConfirm}
-        data={receiptData}
-        isProcessing={isProcessing}
-        isDuplicate={isDuplicate}
-        capturedImage={capturedImage}
-      />
+      {/* Manual review drawer for items that need editing */}
+      {drawerItem && (
+        <ReceiptDrawer
+          isOpen={true}
+          onClose={() => setSelectedItem(null)}
+          onConfirm={handleManualConfirm}
+          data={drawerItem.receiptData || null}
+          isProcessing={false}
+          isDuplicate={drawerItem.status === "duplicate"}
+          capturedImage={drawerItem.imageData}
+        />
+      )}
     </div>
   );
 };
