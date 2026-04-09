@@ -49,6 +49,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   useEffect(() => {
     let mounted = true;
 
+    // Safety timeout - never stay loading forever
+    const timeout = setTimeout(() => {
+      if (mounted) setLoading(false);
+    }, 5000);
+
     // First restore session from storage
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!mounted) return;
@@ -60,6 +65,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         setProfile(null);
         setIsAdmin(false);
       }
+      if (mounted) {
+        setLoading(false);
+        clearTimeout(timeout);
+      }
+    }).catch(() => {
       if (mounted) setLoading(false);
     });
 
@@ -79,6 +89,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     return () => {
       mounted = false;
+      clearTimeout(timeout);
       subscription.unsubscribe();
     };
   }, []);
