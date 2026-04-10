@@ -51,7 +51,7 @@ serve(async (req) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: "google/gemini-3-flash-preview",
         messages: [
           { role: "system", content: systemPrompt },
           {
@@ -141,6 +141,19 @@ serve(async (req) => {
     }
 
     const receiptData = JSON.parse(toolCall.function.arguments);
+
+    const invalidReceipt =
+      (!receiptData.receipt_number || receiptData.receipt_number === "N/A") &&
+      Number(receiptData.total_area ?? 0) === 0;
+
+    if (invalidReceipt) {
+      return new Response(JSON.stringify({
+        error: receiptData.notes || "تعذر قراءة الإيصال بوضوح، أعد تصويره بإضاءة أفضل ومن مسافة أقرب",
+      }), {
+        status: 422,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
     
     // Ensure commission is calculated
     if (receiptData.total_area && !receiptData.total_commission) {

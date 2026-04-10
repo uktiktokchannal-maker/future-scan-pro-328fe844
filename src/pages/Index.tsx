@@ -6,6 +6,7 @@ import QueueIndicator from "@/components/QueueIndicator";
 import WalletView from "@/components/WalletView";
 import BottomNav from "@/components/BottomNav";
 import { supabase } from "@/integrations/supabase/client";
+import { analyzeReceiptImage } from "@/lib/receipt-analysis";
 import { toast } from "sonner";
 import { LogOut } from "lucide-react";
 
@@ -34,15 +35,20 @@ const Index = () => {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [selectedItem, setSelectedItem] = useState<QueueItem | null>(null);
   const processingRef = useRef(false);
+  const queueRef = useRef<QueueItem[]>([]);
 
-  const updateItem = (id: string, updates: Partial<QueueItem>) => {
+  const updateItem = useCallback((id: string, updates: Partial<QueueItem>) => {
     setQueue(q => q.map(i => i.id === id ? { ...i, ...updates } : i));
-  };
+  }, []);
+
+  useEffect(() => {
+    queueRef.current = queue;
+  }, [queue]);
 
   const processNextItem = useCallback(async () => {
     if (processingRef.current || !user) return;
 
-    const nextItem = queue.find(i => i.status === "queued");
+    const nextItem = queueRef.current.find(i => i.status === "queued");
     if (!nextItem) return;
 
     processingRef.current = true;
@@ -51,12 +57,13 @@ const Index = () => {
     try {
       updateItem(itemId, { status: "analyzing" });
 
-      const { data, error } = await supabase.functions.invoke("analyze-receipt", {
-        body: { image_base64: nextItem.imageData },
-      });
+      const data = await analyzeReceiptImage(nextItem.imageData);
 
-      if (error || data?.error) {
-        const errMsg = data?.error || error?.message || "خطأ في التحليل";
+      const isUnreadableReceipt =
+        (!data.receipt_number || data.receipt_number === "N/A") && Number(data.total_area ?? 0) === 0;
+
+      if (isUnreadableReceipt) {
+        const errMsg = data.notes || "تعذر قراءة الإيصال بوضوح، أعد التصوير بإضاءة أفضل.";
         updateItem(itemId, { status: "error", error: errMsg });
         toast.error(errMsg);
         processingRef.current = false;
@@ -140,11 +147,12 @@ const Index = () => {
       }
     } catch (e) {
       console.error("Processing error:", e);
-      updateItem(itemId, { status: "error", error: "خطأ غير متوقع" });
-      toast.error("حدث خطأ أثناء المعالجة");
+      const errMsg = e instanceof Error ? e.message : "حدث خطأ أثناء المعالجة";
+      updateItem(itemId, { status: "error", error: errMsg });
+      toast.error(errMsg);
     }
     processingRef.current = false;
-  }, [user, queue]);
+  }, [user, updateItem]);
 
   // Trigger processing when queue changes
   useEffect(() => {
