@@ -7,17 +7,29 @@ interface ScannerViewProps {
   onCapture: (imageData: string) => void;
 }
 
-const compressImage = (canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D): string => {
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const data = imageData.data;
-  for (let i = 0; i < data.length; i += 4) {
-    const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-    data[i] = gray;
-    data[i + 1] = gray;
-    data[i + 2] = gray;
-  }
-  ctx.putImageData(imageData, 0, 0);
-  return canvas.toDataURL("image/jpeg", 0.5);
+const MAX_CAPTURE_DIMENSION = 960;
+const JPEG_QUALITY = 0.45;
+
+const renderOptimizedImage = (
+  source: CanvasImageSource,
+  canvas: HTMLCanvasElement,
+  width: number,
+  height: number,
+) => {
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  ctx.clearRect(0, 0, width, height);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.filter = "grayscale(1) contrast(1.08) brightness(1.04)";
+  ctx.drawImage(source, 0, 0, width, height);
+  ctx.filter = "none";
+
+  return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
 };
 
 const ScannerView = ({ onCapture }: ScannerViewProps) => {
@@ -63,14 +75,9 @@ const ScannerView = ({ onCapture }: ScannerViewProps) => {
       img.onload = () => {
         const canvas = canvasRef.current;
         if (!canvas) return;
-        const maxDim = 1280;
-        const scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
-        canvas.width = img.width * scale;
-        canvas.height = img.height * scale;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return;
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        const imageData = compressImage(canvas, ctx);
+        const scale = Math.min(MAX_CAPTURE_DIMENSION / img.width, MAX_CAPTURE_DIMENSION / img.height, 1);
+        const imageData = renderOptimizedImage(img, canvas, Math.round(img.width * scale), Math.round(img.height * scale));
+        if (!imageData) return;
         if (navigator.vibrate) navigator.vibrate(50);
         onCapture(imageData);
       };
@@ -80,17 +87,23 @@ const ScannerView = ({ onCapture }: ScannerViewProps) => {
   }, [onCapture]);
 
   const capturePhoto = useCallback(() => {
-    if (isStreaming && videoRef.current && canvasRef.current) {
+    if (
+      isStreaming &&
+      videoRef.current &&
+      canvasRef.current &&
+      videoRef.current.videoWidth > 0 &&
+      videoRef.current.videoHeight > 0
+    ) {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      const maxDim = 1280;
-      const scale = Math.min(maxDim / video.videoWidth, maxDim / video.videoHeight, 1);
-      canvas.width = video.videoWidth * scale;
-      canvas.height = video.videoHeight * scale;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const imageData = compressImage(canvas, ctx);
+      const scale = Math.min(MAX_CAPTURE_DIMENSION / video.videoWidth, MAX_CAPTURE_DIMENSION / video.videoHeight, 1);
+      const imageData = renderOptimizedImage(
+        video,
+        canvas,
+        Math.round(video.videoWidth * scale),
+        Math.round(video.videoHeight * scale),
+      );
+      if (!imageData) return;
       if (navigator.vibrate) navigator.vibrate(50);
       onCapture(imageData);
     } else {
@@ -136,7 +149,11 @@ const ScannerView = ({ onCapture }: ScannerViewProps) => {
         </div>
 
         <p className="text-sm text-muted-foreground">
-          {isStreaming ? "ضع الإيصال داخل الإطار" : "اضغط على الزر أدناه لالتقاط الإيصال"}
+          {cameraFailed
+            ? "تعذر فتح الكاميرا، اختر صورة الإيصال من المعرض"
+            : isStreaming
+              ? "ضع الإيصال داخل الإطار"
+              : "جاري تجهيز الكاميرا، أو اختر صورة الإيصال"}
         </p>
       </div>
 
