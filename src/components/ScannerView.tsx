@@ -7,9 +7,7 @@ interface ScannerViewProps {
   onCapture: (imageData: string) => void;
 }
 
-// Compress and convert image to grayscale for faster upload & AI processing
 const compressImage = (canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D): string => {
-  // Convert to grayscale for better OCR
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imageData.data;
   for (let i = 0; i < data.length; i += 4) {
@@ -19,16 +17,16 @@ const compressImage = (canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D)
     data[i + 2] = gray;
   }
   ctx.putImageData(imageData, 0, 0);
-  
-  // Compress to JPEG at 0.5 quality (~200KB instead of 5MB)
   return canvas.toDataURL("image/jpeg", 0.5);
 };
 
 const ScannerView = ({ onCapture }: ScannerViewProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [flashOn, setFlashOn] = useState(false);
+  const [cameraFailed, setCameraFailed] = useState(false);
   const streamRef = useRef<MediaStream | null>(null);
   const { profile } = useAuth();
 
@@ -41,13 +39,14 @@ const ScannerView = ({ onCapture }: ScannerViewProps) => {
         videoRef.current.srcObject = stream;
         streamRef.current = stream;
         setIsStreaming(true);
+        setCameraFailed(false);
       }
     } catch {
       console.error("لا يمكن الوصول للكاميرا");
+      setCameraFailed(true);
     }
   }, []);
 
-  // Auto-open camera on mount
   useEffect(() => {
     startCamera();
     return () => {
@@ -57,81 +56,109 @@ const ScannerView = ({ onCapture }: ScannerViewProps) => {
     };
   }, [startCamera]);
 
-  const capturePhoto = useCallback(() => {
-    if (!videoRef.current || !canvasRef.current) return;
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    
-    // Resize to max 1280px for faster processing
-    const maxDim = 1280;
-    const scale = Math.min(maxDim / video.videoWidth, maxDim / video.videoHeight, 1);
-    canvas.width = video.videoWidth * scale;
-    canvas.height = video.videoHeight * scale;
-    
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    
-    const imageData = compressImage(canvas, ctx);
-    
-    // Haptic feedback on capture
-    if (navigator.vibrate) navigator.vibrate(50);
-    
-    onCapture(imageData);
+  const processImageFile = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const maxDim = 1280;
+        const scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const imageData = compressImage(canvas, ctx);
+        if (navigator.vibrate) navigator.vibrate(50);
+        onCapture(imageData);
+      };
+      img.src = e.target?.result as string;
+    };
+    reader.readAsDataURL(file);
   }, [onCapture]);
 
+  const capturePhoto = useCallback(() => {
+    if (isStreaming && videoRef.current && canvasRef.current) {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      const maxDim = 1280;
+      const scale = Math.min(maxDim / video.videoWidth, maxDim / video.videoHeight, 1);
+      canvas.width = video.videoWidth * scale;
+      canvas.height = video.videoHeight * scale;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imageData = compressImage(canvas, ctx);
+      if (navigator.vibrate) navigator.vibrate(50);
+      onCapture(imageData);
+    } else {
+      // Fallback: open file picker
+      fileInputRef.current?.click();
+    }
+  }, [isStreaming, onCapture]);
+
+  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processImageFile(file);
+      e.target.value = "";
+    }
+  }, [processImageFile]);
+
   return (
-    <div className="relative flex flex-col items-center justify-center min-h-[calc(100vh-5rem)]">
-      <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between p-4">
+    <div className="relative flex flex-col min-h-[calc(100vh-5rem)]">
+      {/* Header */}
+      <div className="flex items-center justify-between p-4">
         <button onClick={() => setFlashOn(!flashOn)} className="p-2 rounded-full glass-card">
           {flashOn ? <Zap className="h-5 w-5 text-primary" /> : <ZapOff className="h-5 w-5 text-muted-foreground" />}
         </button>
         <div className="flex items-center gap-3">
-          {profile && <span className="text-xs text-muted-foreground">أهلاً {profile.full_name}</span>}
+          {profile && <span className="text-sm text-muted-foreground">أهلاً {profile.full_name}</span>}
           <img src={futureLogo} alt="Future" className="h-10 object-contain" />
         </div>
       </div>
 
-      <div className="relative w-full flex-1 flex items-center justify-center overflow-hidden bg-background">
-        {isStreaming ? (
-          <>
+      {/* Camera / Placeholder Area */}
+      <div className="flex-1 flex flex-col items-center justify-center px-6 gap-6">
+        <div className="relative w-full max-w-sm aspect-[4/3] rounded-2xl border-2 border-primary/60 overflow-hidden flex items-center justify-center bg-card/50">
+          {isStreaming ? (
             <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
-            <div className="relative z-10 w-72 h-48 border-2 border-primary/60 rounded-2xl shadow-glow">
-              <div className="absolute -top-0.5 -right-0.5 w-8 h-8 border-t-2 border-r-2 border-primary rounded-tr-2xl" />
-              <div className="absolute -top-0.5 -left-0.5 w-8 h-8 border-t-2 border-l-2 border-primary rounded-tl-2xl" />
-              <div className="absolute -bottom-0.5 -right-0.5 w-8 h-8 border-b-2 border-r-2 border-primary rounded-br-2xl" />
-              <div className="absolute -bottom-0.5 -left-0.5 w-8 h-8 border-b-2 border-l-2 border-primary rounded-bl-2xl" />
-            </div>
-            <p className="absolute bottom-32 z-10 text-sm text-muted-foreground">ضع الإيصال داخل الإطار</p>
-          </>
-        ) : (
-          <div className="flex flex-col items-center gap-6 text-center px-8">
-            <div className="w-24 h-24 rounded-full glass-card flex items-center justify-center animate-pulse">
-              <Camera className="h-10 w-10 text-muted-foreground" />
-            </div>
-            <div>
-              <h2 className="text-xl font-bold text-foreground mb-2">جاري تشغيل الكاميرا...</h2>
-              <p className="text-sm text-muted-foreground">يرجى السماح بالوصول للكاميرا</p>
-            </div>
-            <button onClick={startCamera}
-              className="gradient-primary text-primary-foreground px-8 py-3 rounded-xl font-bold text-lg shadow-glow transition-all hover:shadow-glow-strong">
-              تشغيل الكاميرا
-            </button>
-          </div>
-        )}
+          ) : (
+            <Camera className="h-16 w-16 text-muted-foreground/40" />
+          )}
+          {/* Corner decorations */}
+          <div className="absolute top-0 right-0 w-10 h-10 border-t-2 border-r-2 border-primary rounded-tr-2xl pointer-events-none" />
+          <div className="absolute top-0 left-0 w-10 h-10 border-t-2 border-l-2 border-primary rounded-tl-2xl pointer-events-none" />
+          <div className="absolute bottom-0 right-0 w-10 h-10 border-b-2 border-r-2 border-primary rounded-br-2xl pointer-events-none" />
+          <div className="absolute bottom-0 left-0 w-10 h-10 border-b-2 border-l-2 border-primary rounded-bl-2xl pointer-events-none" />
+        </div>
+
+        <p className="text-sm text-muted-foreground">
+          {isStreaming ? "ضع الإيصال داخل الإطار" : "اضغط على الزر أدناه لالتقاط الإيصال"}
+        </p>
       </div>
 
-      {isStreaming && (
-        <div className="absolute bottom-8 z-20">
-          <button onClick={capturePhoto}
-            className="w-20 h-20 rounded-full gradient-primary shadow-glow-strong animate-pulse-glow flex items-center justify-center transition-transform active:scale-90">
-            <div className="w-16 h-16 rounded-full border-4 border-primary-foreground/30 flex items-center justify-center">
-              <Camera className="h-7 w-7 text-primary-foreground" />
-            </div>
-          </button>
-        </div>
-      )}
+      {/* Capture Button */}
+      <div className="flex justify-center pb-8">
+        <button onClick={capturePhoto}
+          className="w-20 h-20 rounded-full gradient-primary shadow-glow-strong animate-pulse-glow flex items-center justify-center transition-transform active:scale-90">
+          <div className="w-16 h-16 rounded-full border-4 border-primary-foreground/30 flex items-center justify-center">
+            <Camera className="h-7 w-7 text-primary-foreground" />
+          </div>
+        </button>
+      </div>
 
+      {/* Hidden file input for fallback */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={handleFileChange}
+      />
       <canvas ref={canvasRef} className="hidden" />
     </div>
   );
