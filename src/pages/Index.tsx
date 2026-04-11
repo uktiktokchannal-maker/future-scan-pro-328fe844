@@ -67,7 +67,7 @@ const Index = () => {
       if (isUnreadableReceipt) {
         const errMsg = data.notes || "تعذر قراءة الإيصال بوضوح، أعد التصوير بإضاءة أفضل.";
         updateItem(itemId, { status: "error", error: errMsg });
-        setSelectedItem(current => current?.id === itemId ? null : current);
+        setSelectedItem(current => current?.id === itemId ? { ...current, status: "error", error: errMsg } : current);
         toast.error(errMsg);
         processingRef.current = false;
         return;
@@ -141,7 +141,7 @@ const Index = () => {
           toast.error("إيصال مكرر!");
         } else {
           updateItem(itemId, { status: "error", error: "خطأ في الحفظ" });
-          setSelectedItem(current => current?.id === itemId ? null : current);
+          setSelectedItem(current => current?.id === itemId ? { ...current, status: "error", error: "خطأ في الحفظ" } : current);
           toast.error("خطأ في حفظ الإيصال");
         }
       } else {
@@ -153,7 +153,7 @@ const Index = () => {
       console.error("Processing error:", e);
       const errMsg = e instanceof Error ? e.message : "حدث خطأ أثناء المعالجة";
       updateItem(itemId, { status: "error", error: errMsg });
-      setSelectedItem(current => current?.id === itemId ? null : current);
+      setSelectedItem(current => current?.id === itemId ? { ...current, status: "error", error: errMsg } : current);
       toast.error(errMsg);
     }
     processingRef.current = false;
@@ -279,6 +279,7 @@ const Index = () => {
           data={selectedQueueItem.receiptData || null}
           isProcessing={["queued", "analyzing", "saving"].includes(selectedQueueItem.status)}
           isDuplicate={selectedQueueItem.status === "duplicate"}
+          errorMessage={selectedQueueItem.error || null}
           capturedImage={selectedQueueItem.imageData}
         />
       )}

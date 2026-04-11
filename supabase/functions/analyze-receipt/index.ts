@@ -5,6 +5,8 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+const AI_MODELS = ["google/gemini-3-flash-preview", "openai/gpt-5-mini"] as const;
+
 const isPlaceholderReceiptNumber = (value: unknown) => {
   const normalized = String(value ?? "").trim().toLowerCase();
   return !normalized || ["n/a", "na", "0", "0000", "unknown", "غير متوفر"].includes(normalized);
@@ -23,6 +25,117 @@ const isWeakAnalysis = (receiptData: Record<string, unknown>) => {
   );
 };
 
+const normalizeImagePayload = (value: unknown) => {
+  const input = String(value ?? "").trim();
+  if (!input) {
+    throw new Error("No image provided");
+  }
+
+  const match = input.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  const mimeType = match?.[1] ?? "image/jpeg";
+  let rawBase64 = (match?.[2] ?? input).replace(/\s/g, "");
+
+  const padding = rawBase64.length % 4;
+  if (padding) {
+    rawBase64 += "=".repeat(4 - padding);
+  }
+
+  try {
+    rawBase64 = btoa(atob(rawBase64));
+  } catch {
+    throw new Error("صيغة صورة الإيصال غير صالحة");
+  }
+
+  return {
+    dataUrl: `data:${mimeType};base64,${rawBase64}`,
+  };
+};
+
+const buildAiRequestBody = (model: string, systemPrompt: string, imageDataUrl: string) => ({
+  model,
+  temperature: 0,
+  messages: [
+    { role: "system", content: systemPrompt },
+    {
+      role: "user",
+      content: [
+        {
+          type: "image_url",
+          image_url: { url: imageDataUrl },
+        },
+        {
+          type: "text",
+          text: "حلل هذا الإيصال واستخرج البيانات بدقة. اذكر أي سيناريو استخدمت (أ، ب، أو ج).",
+        },
+      ],
+    },
+  ],
+  tools: [
+    {
+      type: "function",
+      function: {
+        name: "extract_receipt_data",
+        description: "Extract structured data from a Sudanese printing receipt image",
+        parameters: {
+          type: "object",
+          properties: {
+            receipt_number: { type: "string", description: "رقم الإيصال أو الفاتورة" },
+            client_name: { type: "string", description: "اسم العميل/الزبون" },
+            date: { type: "string", description: "تاريخ الإيصال بصيغة YYYY-MM-DD" },
+            items: {
+              type: "array",
+              description: "بنود الطباعة المستخرجة",
+              items: {
+                type: "object",
+                properties: {
+                  description: { type: "string", description: "وصف الصنف" },
+                  width_cm: { type: "number", description: "العرض بالسنتيمتر كما مكتوب" },
+                  height_cm: { type: "number", description: "الطول بالسنتيمتر كما مكتوب" },
+                  width_m: { type: "number", description: "العرض بالمتر بعد التحويل" },
+                  height_m: { type: "number", description: "الطول بالمتر بعد التحويل" },
+                  area_m2: { type: "number", description: "المساحة بالمتر المربع" },
+                  quantity: { type: "number", description: "الكمية" },
+                  total_area_m2: { type: "number", description: "المساحة الكلية = area_m2 × quantity" },
+                },
+                required: ["area_m2"],
+              },
+            },
+            total_area: { type: "number", description: "إجمالي الأمتار المربعة" },
+            commission_rate: { type: "number", description: "سعر العمولة لكل متر = 300" },
+            total_commission: { type: "number", description: "إجمالي العمولة = total_area × 300" },
+            analysis_path: { type: "string", enum: ["أ", "ب", "ج"], description: "أي سيناريو تحليل تم استخدامه" },
+            notes: { type: "string", description: "ملاحظات حول أرقام غير واضحة أو مشطوبة" },
+          },
+          required: ["receipt_number", "total_area", "total_commission", "analysis_path"],
+        },
+      },
+    },
+  ],
+  tool_choice: { type: "function", function: { name: "extract_receipt_data" } },
+});
+
+const buildAiErrorResponse = (status: number, errorText: string) => {
+  if (status === 429) {
+    return new Response(JSON.stringify({ error: "تم تجاوز حد الطلبات، حاول لاحقاً" }), {
+      status: 429,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  if (status === 402) {
+    return new Response(JSON.stringify({ error: "يرجى إضافة رصيد لحسابك" }), {
+      status: 402,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  console.error("AI error:", status, errorText);
+  return new Response(JSON.stringify({ error: "خطأ في تحليل الصورة" }), {
+    status: 500,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+};
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
@@ -37,6 +150,8 @@ serve(async (req) => {
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
+
+    const { dataUrl } = normalizeImagePayload(image_base64);
 
     const systemPrompt = `أنت "المحاسب الرقمي" لشركة فيوتشر للطباعة والإعلان. دورك هو العمل كشريك مالي للمصمم والمدير، وتحليل إيصالات طلبات الطباعة المكتوبة بخط اليد بدقة بشرية متناهية.
 
@@ -62,92 +177,38 @@ serve(async (req) => {
 - المنع من التكرار: استخرج "رقم الإيصال" أو "اسم الزبون + التاريخ" لإنشاء بصمة فريدة.
 - عدم اليقين: إذا وجدت رقماً مشطوباً أو غير واضح نهائياً، ضع قيمة 0 وأشر إلى ذلك في الملاحظات.`;
 
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
-        temperature: 0,
-        messages: [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: [
-              {
-                type: "image_url",
-                image_url: { url: image_base64.startsWith("data:") ? image_base64 : `data:image/jpeg;base64,${image_base64}` },
-              },
-              {
-                type: "text",
-                text: "حلل هذا الإيصال واستخرج البيانات بدقة. اذكر أي سيناريو استخدمت (أ، ب، أو ج).",
-              },
-            ],
-          },
-        ],
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "extract_receipt_data",
-              description: "Extract structured data from a Sudanese printing receipt image",
-              parameters: {
-                type: "object",
-                properties: {
-                  receipt_number: { type: "string", description: "رقم الإيصال أو الفاتورة" },
-                  client_name: { type: "string", description: "اسم العميل/الزبون" },
-                  date: { type: "string", description: "تاريخ الإيصال بصيغة YYYY-MM-DD" },
-                  items: {
-                    type: "array",
-                    description: "بنود الطباعة المستخرجة",
-                    items: {
-                      type: "object",
-                      properties: {
-                        description: { type: "string", description: "وصف الصنف" },
-                        width_cm: { type: "number", description: "العرض بالسنتيمتر كما مكتوب" },
-                        height_cm: { type: "number", description: "الطول بالسنتيمتر كما مكتوب" },
-                        width_m: { type: "number", description: "العرض بالمتر بعد التحويل" },
-                        height_m: { type: "number", description: "الطول بالمتر بعد التحويل" },
-                        area_m2: { type: "number", description: "المساحة بالمتر المربع" },
-                        quantity: { type: "number", description: "الكمية" },
-                        total_area_m2: { type: "number", description: "المساحة الكلية = area_m2 × quantity" },
-                      },
-                      required: ["area_m2"],
-                    },
-                  },
-                  total_area: { type: "number", description: "إجمالي الأمتار المربعة" },
-                  commission_rate: { type: "number", description: "سعر العمولة لكل متر = 300" },
-                  total_commission: { type: "number", description: "إجمالي العمولة = total_area × 300" },
-                  analysis_path: { type: "string", enum: ["أ", "ب", "ج"], description: "أي سيناريو تحليل تم استخدامه" },
-                  notes: { type: "string", description: "ملاحظات حول أرقام غير واضحة أو مشطوبة" },
-                },
-                required: ["receipt_number", "total_area", "total_commission", "analysis_path"],
-              },
-            },
-          },
-        ],
-        tool_choice: { type: "function", function: { name: "extract_receipt_data" } },
-      }),
-    });
+    let response: Response | null = null;
+    let errorText = "";
 
-    if (!response.ok) {
-      if (response.status === 429) {
-        return new Response(JSON.stringify({ error: "تم تجاوز حد الطلبات، حاول لاحقاً" }), {
-          status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      if (response.status === 402) {
-        return new Response(JSON.stringify({ error: "يرجى إضافة رصيد لحسابك" }), {
-          status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      const t = await response.text();
-      console.error("AI error:", response.status, t);
-      return new Response(JSON.stringify({ error: "خطأ في تحليل الصورة" }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    for (const model of AI_MODELS) {
+      response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${LOVABLE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(buildAiRequestBody(model, systemPrompt, dataUrl)),
       });
+
+      if (response.ok) {
+        break;
+      }
+
+      errorText = await response.text();
+      const shouldFallback =
+        model !== AI_MODELS[AI_MODELS.length - 1] &&
+        response.status === 400 &&
+        errorText.includes("Base64 decoding failed");
+
+      console.error("AI error:", model, response.status, errorText);
+
+      if (!shouldFallback) {
+        return buildAiErrorResponse(response.status, errorText);
+      }
+    }
+
+    if (!response || !response.ok) {
+      return buildAiErrorResponse(response?.status ?? 500, errorText || "Unknown AI error");
     }
 
     const data = await response.json();
