@@ -1,5 +1,5 @@
 const ANALYZE_RECEIPT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-receipt`;
-const ANALYSIS_TIMEOUT_MS = 6500;
+const ANALYSIS_TIMEOUT_MS = 18000;
 const PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
 export interface AnalyzeReceiptResponse {
@@ -52,7 +52,7 @@ export const analyzeReceiptImage = async (imageBase64: string): Promise<AnalyzeR
     return payload as AnalyzeReceiptResponse;
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("انتهت مهلة التحليل، أعد تصوير الإيصال بإضاءة أوضح.");
+      throw new Error("استغرق التحليل وقتاً أطول من المتوقع، حاول بصورة أوضح أو أعد المحاولة.");
     }
 
     throw error instanceof Error ? error : new Error("تعذر تحليل الإيصال");

@@ -20,10 +20,11 @@ interface ReceiptDrawerProps {
   data: ReceiptData | null;
   isProcessing: boolean;
   isDuplicate?: boolean;
+  errorMessage?: string | null;
   capturedImage?: string | null;
 }
 
-const ReceiptDrawer = ({ isOpen, onClose, onConfirm, data, isProcessing, isDuplicate, capturedImage }: ReceiptDrawerProps) => {
+const ReceiptDrawer = ({ isOpen, onClose, onConfirm, data, isProcessing, isDuplicate, errorMessage, capturedImage }: ReceiptDrawerProps) => {
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editedData, setEditedData] = useState<ReceiptData | null>(null);
   const [progress, setProgress] = useState(0);
@@ -154,6 +155,20 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, data, isProcessing, isDupli
                   هذا الإيصال مسجل مسبقاً في النظام. لا يمكن احتسابه مرة أخرى.
                 </p>
                 <button onClick={onClose} className="w-full py-3 rounded-xl bg-muted text-foreground font-bold mt-4">إغلاق</button>
+              </div>
+            ) : errorMessage ? (
+              <div className="flex flex-col items-center py-8 gap-4">
+                {capturedImage && (
+                  <div className="w-full max-h-40 rounded-2xl overflow-hidden mb-2">
+                    <img src={capturedImage} alt="الإيصال" className="w-full h-full object-cover opacity-80" />
+                  </div>
+                )}
+                <div className="w-16 h-16 rounded-full bg-destructive/20 flex items-center justify-center">
+                  <AlertTriangle className="h-8 w-8 text-destructive" />
+                </div>
+                <h4 className="text-lg font-bold text-foreground">تعذر إكمال التحليل</h4>
+                <p className="text-sm text-muted-foreground text-center leading-7">{errorMessage}</p>
+                <button onClick={onClose} className="w-full py-3 rounded-xl bg-muted text-foreground font-bold mt-2">إغلاق</button>
               </div>
             ) : currentData ? (
               <>
