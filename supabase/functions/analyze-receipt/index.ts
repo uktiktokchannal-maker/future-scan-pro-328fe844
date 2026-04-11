@@ -5,6 +5,24 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+const isPlaceholderReceiptNumber = (value: unknown) => {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return !normalized || ["n/a", "na", "0", "0000", "unknown", "غير متوفر"].includes(normalized);
+};
+
+const isWeakAnalysis = (receiptData: Record<string, unknown>) => {
+  const totalArea = Number(receiptData.total_area ?? 0);
+  const notes = String(receiptData.notes ?? "").trim();
+  const clientName = String(receiptData.client_name ?? "").trim().toLowerCase();
+
+  return totalArea <= 0 && (
+    isPlaceholderReceiptNumber(receiptData.receipt_number) ||
+    clientName === "غير متوفر في الصورة" ||
+    notes.includes("ليست صورة") ||
+    notes.includes("يرجى إرسال صورة الإيصال")
+  );
+};
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
@@ -52,6 +70,7 @@ serve(async (req) => {
       },
       body: JSON.stringify({
         model: "google/gemini-3-flash-preview",
+        temperature: 0,
         messages: [
           { role: "system", content: systemPrompt },
           {
@@ -142,9 +161,7 @@ serve(async (req) => {
 
     const receiptData = JSON.parse(toolCall.function.arguments);
 
-    const invalidReceipt =
-      (!receiptData.receipt_number || receiptData.receipt_number === "N/A") &&
-      Number(receiptData.total_area ?? 0) === 0;
+    const invalidReceipt = isWeakAnalysis(receiptData);
 
     if (invalidReceipt) {
       return new Response(JSON.stringify({
