@@ -36,6 +36,7 @@ const Index = () => {
   const [selectedItem, setSelectedItem] = useState<QueueItem | null>(null);
   const processingRef = useRef(false);
   const queueRef = useRef<QueueItem[]>([]);
+  const selectedQueueItem = selectedItem ? queue.find(item => item.id === selectedItem.id) ?? null : null;
 
   const updateItem = useCallback((id: string, updates: Partial<QueueItem>) => {
     setQueue(q => q.map(i => i.id === id ? { ...i, ...updates } : i));
@@ -55,6 +56,7 @@ const Index = () => {
     const itemId = nextItem.id;
 
     try {
+      setSelectedItem(nextItem);
       updateItem(itemId, { status: "analyzing" });
 
       const data = await analyzeReceiptImage(nextItem.imageData);
@@ -65,6 +67,7 @@ const Index = () => {
       if (isUnreadableReceipt) {
         const errMsg = data.notes || "تعذر قراءة الإيصال بوضوح، أعد التصوير بإضاءة أفضل.";
         updateItem(itemId, { status: "error", error: errMsg });
+        setSelectedItem(current => current?.id === itemId ? null : current);
         toast.error(errMsg);
         processingRef.current = false;
         return;
@@ -138,6 +141,7 @@ const Index = () => {
           toast.error("إيصال مكرر!");
         } else {
           updateItem(itemId, { status: "error", error: "خطأ في الحفظ" });
+          setSelectedItem(current => current?.id === itemId ? null : current);
           toast.error("خطأ في حفظ الإيصال");
         }
       } else {
@@ -149,6 +153,7 @@ const Index = () => {
       console.error("Processing error:", e);
       const errMsg = e instanceof Error ? e.message : "حدث خطأ أثناء المعالجة";
       updateItem(itemId, { status: "error", error: errMsg });
+      setSelectedItem(current => current?.id === itemId ? null : current);
       toast.error(errMsg);
     }
     processingRef.current = false;
@@ -266,15 +271,15 @@ const Index = () => {
 
       <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
 
-      {selectedItem && (
+      {selectedQueueItem && (
         <ReceiptDrawer
           isOpen={true}
           onClose={() => setSelectedItem(null)}
           onConfirm={handleManualConfirm}
-          data={selectedItem.receiptData || null}
-          isProcessing={false}
-          isDuplicate={selectedItem.status === "duplicate"}
-          capturedImage={selectedItem.imageData}
+          data={selectedQueueItem.receiptData || null}
+          isProcessing={["queued", "analyzing", "saving"].includes(selectedQueueItem.status)}
+          isDuplicate={selectedQueueItem.status === "duplicate"}
+          capturedImage={selectedQueueItem.imageData}
         />
       )}
     </div>

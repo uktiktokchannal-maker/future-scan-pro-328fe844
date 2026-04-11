@@ -1,7 +1,6 @@
-import { supabase } from "@/integrations/supabase/client";
-
 const ANALYZE_RECEIPT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-receipt`;
 const ANALYSIS_TIMEOUT_MS = 6500;
+const PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
 export interface AnalyzeReceiptResponse {
   receipt_number?: string;
@@ -21,17 +20,20 @@ export interface AnalyzeReceiptResponse {
 }
 
 export const analyzeReceiptImage = async (imageBase64: string): Promise<AnalyzeReceiptResponse> => {
-  const { data: { session } } = await supabase.auth.getSession();
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), ANALYSIS_TIMEOUT_MS);
 
   try {
+    if (!imageBase64) {
+      throw new Error("لم يتم إرسال صورة الإيصال للتحليل");
+    }
+
     const response = await fetch(ANALYZE_RECEIPT_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-        Authorization: `Bearer ${session?.access_token ?? import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        apikey: PUBLISHABLE_KEY,
+        Authorization: `Bearer ${PUBLISHABLE_KEY}`,
       },
       body: JSON.stringify({ image_base64: imageBase64 }),
       signal: controller.signal,
