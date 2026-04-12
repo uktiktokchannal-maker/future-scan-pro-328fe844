@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback, useEffect } from "react";
-import { Camera, Zap, ZapOff } from "lucide-react";
+import { Camera, ImagePlus, Zap, ZapOff } from "lucide-react";
 import futureLogo from "@/assets/future-logo.png";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -36,6 +36,7 @@ const ScannerView = ({ onCapture }: ScannerViewProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [flashOn, setFlashOn] = useState(false);
   const [cameraFailed, setCameraFailed] = useState(false);
@@ -54,7 +55,7 @@ const ScannerView = ({ onCapture }: ScannerViewProps) => {
         setCameraFailed(false);
       }
     } catch {
-      console.error("لا يمكن الوصول للكاميرا");
+      console.warn("[ScannerView] Camera not available, using file picker fallback");
       setCameraFailed(true);
     }
   }, []);
@@ -69,24 +70,35 @@ const ScannerView = ({ onCapture }: ScannerViewProps) => {
   }, [startCamera]);
 
   const processImageFile = useCallback((file: File) => {
+    console.log("[ScannerView] Processing file:", file.name, file.size, "bytes");
     const reader = new FileReader();
     reader.onload = (e) => {
       const img = new Image();
       img.onload = () => {
         const canvas = canvasRef.current;
-        if (!canvas) return;
+        if (!canvas) {
+          console.error("[ScannerView] Canvas ref is null");
+          return;
+        }
         const scale = Math.min(MAX_CAPTURE_DIMENSION / img.width, MAX_CAPTURE_DIMENSION / img.height, 1);
         const imageData = renderOptimizedImage(img, canvas, Math.round(img.width * scale), Math.round(img.height * scale));
-        if (!imageData) return;
+        if (!imageData) {
+          console.error("[ScannerView] renderOptimizedImage returned null");
+          return;
+        }
+        console.log("[ScannerView] Image processed, size:", imageData.length, "chars");
         if (navigator.vibrate) navigator.vibrate(50);
         onCapture(imageData);
       };
+      img.onerror = () => console.error("[ScannerView] Failed to load image from FileReader");
       img.src = e.target?.result as string;
     };
+    reader.onerror = () => console.error("[ScannerView] FileReader error");
     reader.readAsDataURL(file);
   }, [onCapture]);
 
   const capturePhoto = useCallback(() => {
+    // If camera is streaming and has valid video, capture from it
     if (
       isStreaming &&
       videoRef.current &&
@@ -94,6 +106,7 @@ const ScannerView = ({ onCapture }: ScannerViewProps) => {
       videoRef.current.videoWidth > 0 &&
       videoRef.current.videoHeight > 0
     ) {
+      console.log("[ScannerView] Capturing from live camera");
       const video = videoRef.current;
       const canvas = canvasRef.current;
       const scale = Math.min(MAX_CAPTURE_DIMENSION / video.videoWidth, MAX_CAPTURE_DIMENSION / video.videoHeight, 1);
@@ -107,10 +120,16 @@ const ScannerView = ({ onCapture }: ScannerViewProps) => {
       if (navigator.vibrate) navigator.vibrate(50);
       onCapture(imageData);
     } else {
-      // Fallback: open file picker
+      // Always fallback to file picker
+      console.log("[ScannerView] Opening file picker (camera not available)");
       fileInputRef.current?.click();
     }
   }, [isStreaming, onCapture]);
+
+  const openGallery = useCallback(() => {
+    console.log("[ScannerView] Opening gallery picker");
+    galleryInputRef.current?.click();
+  }, []);
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -157,22 +176,40 @@ const ScannerView = ({ onCapture }: ScannerViewProps) => {
         </p>
       </div>
 
-      {/* Capture Button */}
-      <div className="flex justify-center pb-8">
+      {/* Capture & Gallery Buttons */}
+      <div className="flex items-center justify-center gap-6 pb-8">
+        {/* Gallery button */}
+        <button onClick={openGallery}
+          className="w-14 h-14 rounded-full glass-card border border-border flex items-center justify-center transition-transform active:scale-90">
+          <ImagePlus className="h-6 w-6 text-muted-foreground" />
+        </button>
+
+        {/* Main capture button */}
         <button onClick={capturePhoto}
           className="w-20 h-20 rounded-full gradient-primary shadow-glow-strong animate-pulse-glow flex items-center justify-center transition-transform active:scale-90">
           <div className="w-16 h-16 rounded-full border-4 border-primary-foreground/30 flex items-center justify-center">
             <Camera className="h-7 w-7 text-primary-foreground" />
           </div>
         </button>
+
+        {/* Spacer for symmetry */}
+        <div className="w-14 h-14" />
       </div>
 
-      {/* Hidden file input for fallback */}
+      {/* Hidden file input for camera capture */}
       <input
         ref={fileInputRef}
         type="file"
         accept="image/*"
         capture="environment"
+        className="hidden"
+        onChange={handleFileChange}
+      />
+      {/* Hidden file input for gallery (no capture attribute) */}
+      <input
+        ref={galleryInputRef}
+        type="file"
+        accept="image/*"
         className="hidden"
         onChange={handleFileChange}
       />

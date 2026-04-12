@@ -1,5 +1,5 @@
 const ANALYZE_RECEIPT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-receipt`;
-const ANALYSIS_TIMEOUT_MS = 18000;
+const ANALYSIS_TIMEOUT_MS = 30000;
 const PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
 export interface AnalyzeReceiptResponse {
@@ -28,6 +28,19 @@ export const analyzeReceiptImage = async (imageBase64: string): Promise<AnalyzeR
       throw new Error("لم يتم إرسال صورة الإيصال للتحليل");
     }
 
+    // Strip data URL prefix - send only raw base64
+    let rawBase64 = imageBase64;
+    if (rawBase64.includes(",")) {
+      rawBase64 = rawBase64.split(",")[1];
+    }
+
+    if (!rawBase64 || rawBase64.length < 100) {
+      throw new Error("الصورة فارغة أو تالفة، أعد التصوير");
+    }
+
+    console.log("[receipt-analysis] Sending image to analyze-receipt, base64 length:", rawBase64.length);
+    const startTime = Date.now();
+
     const response = await fetch(ANALYZE_RECEIPT_URL, {
       method: "POST",
       headers: {
@@ -35,14 +48,19 @@ export const analyzeReceiptImage = async (imageBase64: string): Promise<AnalyzeR
         apikey: PUBLISHABLE_KEY,
         Authorization: `Bearer ${PUBLISHABLE_KEY}`,
       },
-      body: JSON.stringify({ image_base64: imageBase64 }),
+      body: JSON.stringify({ image_base64: rawBase64 }),
       signal: controller.signal,
     });
 
+    const elapsed = Date.now() - startTime;
+    console.log("[receipt-analysis] Response received in", elapsed, "ms, status:", response.status);
+
     const payload = await response.json().catch(() => ({ error: "تعذر قراءة نتيجة التحليل" }));
 
+    console.log("[receipt-analysis] Payload:", JSON.stringify(payload).slice(0, 300));
+
     if (!response.ok) {
-      throw new Error((payload as { error?: string }).error || "تعذر تحليل الإيصال");
+      throw new Error((payload as { error?: string }).error || `خطأ من الخادم: ${response.status}`);
     }
 
     if ((payload as { error?: string }).error) {
@@ -52,7 +70,7 @@ export const analyzeReceiptImage = async (imageBase64: string): Promise<AnalyzeR
     return payload as AnalyzeReceiptResponse;
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("استغرق التحليل وقتاً أطول من المتوقع، حاول بصورة أوضح أو أعد المحاولة.");
+      throw new Error("استغرق التحليل وقتاً أطول من المتوقع (30 ثانية)، حاول بصورة أوضح.");
     }
 
     throw error instanceof Error ? error : new Error("تعذر تحليل الإيصال");

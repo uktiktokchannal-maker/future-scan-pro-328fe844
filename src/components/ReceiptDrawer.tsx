@@ -1,4 +1,4 @@
-import { X, Check, Pencil, AlertTriangle } from "lucide-react";
+import { X, Check, Pencil, AlertTriangle, RefreshCw } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import { Progress } from "@/components/ui/progress";
 
@@ -17,6 +17,7 @@ interface ReceiptDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   onConfirm: (data: ReceiptData) => void;
+  onRetry?: () => void;
   data: ReceiptData | null;
   isProcessing: boolean;
   isDuplicate?: boolean;
@@ -24,13 +25,27 @@ interface ReceiptDrawerProps {
   capturedImage?: string | null;
 }
 
-const ReceiptDrawer = ({ isOpen, onClose, onConfirm, data, isProcessing, isDuplicate, errorMessage, capturedImage }: ReceiptDrawerProps) => {
+const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing, isDuplicate, errorMessage, capturedImage }: ReceiptDrawerProps) => {
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editedData, setEditedData] = useState<ReceiptData | null>(null);
   const [progress, setProgress] = useState(0);
   const [autoSaveCountdown, setAutoSaveCountdown] = useState<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const currentData = editedData || data;
+
+  // Elapsed time counter during processing
+  useEffect(() => {
+    if (!isProcessing) {
+      setElapsedSeconds(0);
+      return;
+    }
+    setElapsedSeconds(0);
+    const interval = setInterval(() => {
+      setElapsedSeconds(prev => prev + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isProcessing]);
 
   // Progress bar animation during processing
   useEffect(() => {
@@ -48,13 +63,13 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, data, isProcessing, isDupli
     return () => clearInterval(interval);
   }, [isProcessing]);
 
-  // Auto-save countdown (3 seconds)
+  // Auto-save countdown (5 seconds)
   useEffect(() => {
-    if (!currentData || isProcessing || isDuplicate) {
+    if (!currentData || isProcessing || isDuplicate || errorMessage) {
       setAutoSaveCountdown(null);
       return;
     }
-    setAutoSaveCountdown(3);
+    setAutoSaveCountdown(5);
     const interval = setInterval(() => {
       setAutoSaveCountdown(prev => {
         if (prev === null || prev <= 1) {
@@ -65,29 +80,28 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, data, isProcessing, isDupli
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, [currentData, isProcessing, isDuplicate]);
+  }, [currentData, isProcessing, isDuplicate, errorMessage]);
 
-  // Auto-save when countdown reaches 0
   const handleConfirm = useCallback(() => {
     if (currentData) {
-      // Haptic feedback on confirm
       if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
       onConfirm(currentData);
     }
   }, [currentData, onConfirm]);
 
+  // Auto-save when countdown reaches 0
   useEffect(() => {
-    if (autoSaveCountdown === 0 && currentData && !isProcessing && !isDuplicate) {
+    if (autoSaveCountdown === 0 && currentData && !isProcessing && !isDuplicate && !errorMessage) {
       handleConfirm();
     }
-  }, [autoSaveCountdown, currentData, isProcessing, isDuplicate, handleConfirm]);
+  }, [autoSaveCountdown, currentData, isProcessing, isDuplicate, errorMessage, handleConfirm]);
 
   // Haptic on successful read
   useEffect(() => {
-    if (data && !isProcessing && !isDuplicate) {
+    if (data && !isProcessing && !isDuplicate && !errorMessage) {
       if (navigator.vibrate) navigator.vibrate(100);
     }
-  }, [data, isProcessing, isDuplicate]);
+  }, [data, isProcessing, isDuplicate, errorMessage]);
 
   if (!isOpen) return null;
 
@@ -103,15 +117,13 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, data, isProcessing, isDupli
     }
     setEditedData(updated);
     setEditingField(null);
-    // Reset auto-save
-    setAutoSaveCountdown(3);
+    setAutoSaveCountdown(5);
   };
 
   return (
     <>
       <div className="fixed inset-0 z-40 bg-background/60 backdrop-blur-sm animate-fade-in" onClick={onClose} />
       
-      {/* Gold progress bar at top */}
       {isProcessing && (
         <div className="fixed top-0 left-0 right-0 z-[60]">
           <Progress value={progress} className="h-1 rounded-none bg-transparent [&>div]:bg-accent" />
@@ -133,7 +145,6 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, data, isProcessing, isDupli
 
             {isProcessing ? (
               <div className="flex flex-col items-center py-8 gap-4">
-                {/* Show captured image while processing */}
                 {capturedImage && (
                   <div className="w-full max-h-40 rounded-2xl overflow-hidden mb-2">
                     <img src={capturedImage} alt="الإيصال" className="w-full h-full object-cover opacity-70" />
@@ -144,6 +155,10 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, data, isProcessing, isDupli
                   WebkitMask: "conic-gradient(transparent 30%, black)",
                 }} />
                 <p className="text-muted-foreground text-sm">المحاسب الذكي يحلل الإيصال...</p>
+                <p className="text-xs text-muted-foreground/60">{elapsedSeconds} ثانية</p>
+                <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground transition-colors mt-2">
+                  إلغاء
+                </button>
               </div>
             ) : isDuplicate ? (
               <div className="flex flex-col items-center py-8 gap-4">
@@ -168,7 +183,14 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, data, isProcessing, isDupli
                 </div>
                 <h4 className="text-lg font-bold text-foreground">تعذر إكمال التحليل</h4>
                 <p className="text-sm text-muted-foreground text-center leading-7">{errorMessage}</p>
-                <button onClick={onClose} className="w-full py-3 rounded-xl bg-muted text-foreground font-bold mt-2">إغلاق</button>
+                <div className="flex gap-3 w-full mt-2">
+                  {onRetry && (
+                    <button onClick={onRetry} className="flex-1 py-3 rounded-xl gradient-primary text-primary-foreground font-bold flex items-center justify-center gap-2">
+                      <RefreshCw className="h-4 w-4" /> إعادة المحاولة
+                    </button>
+                  )}
+                  <button onClick={onClose} className={`${onRetry ? 'flex-1' : 'w-full'} py-3 rounded-xl bg-muted text-foreground font-bold`}>إغلاق</button>
+                </div>
               </div>
             ) : currentData ? (
               <>
@@ -244,7 +266,6 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, data, isProcessing, isDupli
                   )}
                 </div>
 
-                {/* Items detail (collapsed) */}
                 {currentData.items && currentData.items.length > 0 && (
                   <details className="mb-4">
                     <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">

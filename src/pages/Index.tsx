@@ -36,7 +36,9 @@ const Index = () => {
   const [selectedItem, setSelectedItem] = useState<QueueItem | null>(null);
   const processingRef = useRef(false);
   const queueRef = useRef<QueueItem[]>([]);
-  const selectedQueueItem = selectedItem ? queue.find(item => item.id === selectedItem.id) ?? null : null;
+
+  // Keep a live reference of selectedItem for the drawer
+  const selectedQueueItem = selectedItem ? queue.find(item => item.id === selectedItem.id) ?? selectedItem : null;
 
   const updateItem = useCallback((id: string, updates: Partial<QueueItem>) => {
     setQueue(q => q.map(i => i.id === id ? { ...i, ...updates } : i));
@@ -54,20 +56,27 @@ const Index = () => {
 
     processingRef.current = true;
     const itemId = nextItem.id;
+    console.log("[Index] ▶ Processing item:", itemId);
 
     try {
-      setSelectedItem(nextItem);
+      // Update status to analyzing and show drawer
       updateItem(itemId, { status: "analyzing" });
+      setSelectedItem({ ...nextItem, status: "analyzing" });
 
+      // Call AI analysis
+      console.log("[Index] Calling analyzeReceiptImage...");
       const data = await analyzeReceiptImage(nextItem.imageData);
+      console.log("[Index] ✅ Analysis result:", JSON.stringify(data).slice(0, 200));
 
+      // Check if receipt is unreadable
       const isUnreadableReceipt =
         (!data.receipt_number || data.receipt_number === "N/A") && Number(data.total_area ?? 0) === 0;
 
       if (isUnreadableReceipt) {
         const errMsg = data.notes || "تعذر قراءة الإيصال بوضوح، أعد التصوير بإضاءة أفضل.";
+        console.warn("[Index] ⚠ Unreadable receipt:", errMsg);
         updateItem(itemId, { status: "error", error: errMsg });
-        setSelectedItem(current => current?.id === itemId ? { ...current, status: "error", error: errMsg } : current);
+        setSelectedItem(prev => prev?.id === itemId ? { ...prev, status: "error", error: errMsg } : prev);
         toast.error(errMsg);
         processingRef.current = false;
         return;
@@ -82,7 +91,9 @@ const Index = () => {
           .maybeSingle();
 
         if (existing) {
+          console.warn("[Index] ⚠ Duplicate receipt:", data.receipt_number);
           updateItem(itemId, { status: "duplicate" });
+          setSelectedItem(prev => prev?.id === itemId ? { ...prev, status: "duplicate" } : prev);
           if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
           toast.error(`إيصال مكرر: ${data.receipt_number}`);
           processingRef.current = false;
@@ -101,62 +112,21 @@ const Index = () => {
         items: data.items,
       };
 
+      console.log("[Index] Receipt parsed:", receiptData.receiptNumber, "area:", receiptData.totalArea);
       updateItem(itemId, { status: "analyzed", receiptData });
+      setSelectedItem(prev => prev?.id === itemId ? { ...prev, status: "analyzed", receiptData } : prev);
       if (navigator.vibrate) navigator.vibrate(100);
 
-      // Auto-save
-      updateItem(itemId, { status: "saving" });
-
-      let imageUrl = null;
-      const fileName = `${user.id}/${receiptData.receiptNumber}-${Date.now()}.jpg`;
-      const base64Data = nextItem.imageData.split(",")[1];
-      if (base64Data) {
-        const binaryStr = atob(base64Data);
-        const bytes = new Uint8Array(binaryStr.length);
-        for (let j = 0; j < binaryStr.length; j++) bytes[j] = binaryStr.charCodeAt(j);
-
-        const { data: uploadData } = await supabase.storage
-          .from("receipt-images")
-          .upload(fileName, bytes, { contentType: "image/jpeg" });
-
-        if (uploadData) {
-          const { data: urlData } = supabase.storage.from("receipt-images").getPublicUrl(uploadData.path);
-          imageUrl = urlData.publicUrl;
-        }
-      }
-
-      const { error: insertError } = await supabase.from("receipts").insert({
-        receipt_number: receiptData.receiptNumber,
-        designer_id: user.id,
-        client_name: receiptData.clientName,
-        total_area: receiptData.totalArea,
-        commission_amount: receiptData.commission,
-        image_url: imageUrl,
-        receipt_date: new Date().toISOString().split("T")[0],
-      });
-
-      if (insertError) {
-        if (insertError.code === "23505") {
-          updateItem(itemId, { status: "duplicate" });
-          toast.error("إيصال مكرر!");
-        } else {
-          updateItem(itemId, { status: "error", error: "خطأ في الحفظ" });
-          setSelectedItem(current => current?.id === itemId ? { ...current, status: "error", error: "خطأ في الحفظ" } : current);
-          toast.error("خطأ في حفظ الإيصال");
-        }
-      } else {
-        updateItem(itemId, { status: "done", receiptData });
-        if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
-        toast.success(`✅ تم حفظ إيصال ${receiptData.receiptNumber}`);
-      }
     } catch (e) {
-      console.error("Processing error:", e);
+      console.error("[Index] ❌ Processing error:", e);
       const errMsg = e instanceof Error ? e.message : "حدث خطأ أثناء المعالجة";
       updateItem(itemId, { status: "error", error: errMsg });
-      setSelectedItem(current => current?.id === itemId ? { ...current, status: "error", error: errMsg } : current);
+      setSelectedItem(prev => prev?.id === itemId ? { ...prev, status: "error", error: errMsg } : prev);
       toast.error(errMsg);
+    } finally {
+      processingRef.current = false;
+      console.log("[Index] ■ Processing complete for:", itemId);
     }
-    processingRef.current = false;
   }, [user, updateItem]);
 
   // Trigger processing when queue changes
@@ -169,18 +139,19 @@ const Index = () => {
   }, [queue, processNextItem]);
 
   const handleCapture = (imageData: string) => {
+    console.log("[Index] 📸 Image captured, length:", imageData.length);
     const newItem: QueueItem = {
       id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       imageData,
       status: "queued",
     };
     setQueue(prev => [...prev, newItem]);
+    // Immediately show drawer for this item
+    setSelectedItem(newItem);
   };
 
   const handleReviewItem = (item: QueueItem) => {
-    if (item.receiptData) {
-      setSelectedItem(item);
-    }
+    setSelectedItem(item);
   };
 
   const handleManualConfirm = async (data: ReceiptData) => {
@@ -219,7 +190,7 @@ const Index = () => {
         return;
       }
 
-      setQueue(q => q.map(i => i.id === selectedItem.id ? { ...i, status: "done" as const, receiptData: data } : i));
+      updateItem(selectedItem.id, { status: "done", receiptData: data });
       toast.success("تم حفظ الإيصال بنجاح ✅");
       setSelectedItem(null);
     } catch {
@@ -227,11 +198,18 @@ const Index = () => {
     }
   };
 
+  const handleRetry = useCallback(() => {
+    if (!selectedItem) return;
+    console.log("[Index] 🔄 Retrying item:", selectedItem.id);
+    updateItem(selectedItem.id, { status: "queued", error: undefined });
+    setSelectedItem(prev => prev ? { ...prev, status: "queued", error: undefined } : null);
+  }, [selectedItem, updateItem]);
+
   // Clean done items after 15 seconds
   useEffect(() => {
     const timer = setInterval(() => {
       setQueue(prev => prev.filter(i => {
-        if (i.status === "done" || i.status === "duplicate" || i.status === "error") {
+        if (i.status === "done" || i.status === "duplicate") {
           const ts = parseInt(i.id.split("-")[1]);
           return Date.now() - ts < 15000;
         }
@@ -276,10 +254,11 @@ const Index = () => {
           isOpen={true}
           onClose={() => setSelectedItem(null)}
           onConfirm={handleManualConfirm}
+          onRetry={handleRetry}
           data={selectedQueueItem.receiptData || null}
-          isProcessing={["queued", "analyzing", "saving"].includes(selectedQueueItem.status)}
+          isProcessing={["queued", "analyzing"].includes(selectedQueueItem.status)}
           isDuplicate={selectedQueueItem.status === "duplicate"}
-          errorMessage={selectedQueueItem.error || null}
+          errorMessage={selectedQueueItem.status === "error" ? (selectedQueueItem.error || "حدث خطأ") : null}
           capturedImage={selectedQueueItem.imageData}
         />
       )}
