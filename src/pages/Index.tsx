@@ -35,86 +35,51 @@ const Index = () => {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const processingRef = useRef(false);
+  const queueRef = useRef<QueueItem[]>([]);
 
-  // Derive selectedItem from queue - single source of truth
+  // Keep queueRef in sync
+  useEffect(() => {
+    queueRef.current = queue;
+  }, [queue]);
+
   const selectedQueueItem = selectedId ? queue.find(item => item.id === selectedId) ?? null : null;
 
   const updateItem = useCallback((id: string, updates: Partial<QueueItem>) => {
-    console.log("[Index] 📝 updateItem:", id, "→", updates.status || "no status change");
+    console.log("[Index] 📝 updateItem:", id, "→", JSON.stringify(updates).slice(0, 200));
     setQueue(q => q.map(i => i.id === id ? { ...i, ...updates } : i));
   }, []);
 
+  // Process queue items one at a time
   const processNextItem = useCallback(async () => {
-    if (processingRef.current || !user) {
-      console.log("[Index] ⏸ processNextItem skipped:", processingRef.current ? "already processing" : "no user");
-      return;
-    }
+    if (processingRef.current || !user) return;
 
-    // Read current queue directly from state setter to avoid stale closure
-    let nextItem: QueueItem | undefined;
-    setQueue(q => {
-      nextItem = q.find(i => i.status === "queued");
-      return q; // no change
-    });
-
-    // Small delay to let the state setter run
-    await new Promise(r => setTimeout(r, 50));
-
-    if (!nextItem) {
-      console.log("[Index] ⏸ No queued items");
-      return;
-    }
+    const nextItem = queueRef.current.find(i => i.status === "queued");
+    if (!nextItem) return;
 
     processingRef.current = true;
     const itemId = nextItem.id;
-    console.log("[Index] ▶ Processing item:", itemId);
+    const imageData = nextItem.imageData;
+    console.log("[Index] ▶ START processing:", itemId, "image length:", imageData.length);
+
+    // Update to analyzing immediately
+    updateItem(itemId, { status: "analyzing" });
+    setSelectedId(itemId);
 
     try {
-      updateItem(itemId, { status: "analyzing" });
-      setSelectedId(itemId);
-
+      // ---- STEP 1: Call AI analysis ----
       console.log("[Index] 📤 Calling analyzeReceiptImage...");
-      const data = await analyzeReceiptImage(nextItem.imageData);
-      console.log("[Index] ✅ Analysis result:", JSON.stringify(data).slice(0, 300));
+      const data = await analyzeReceiptImage(imageData);
+      console.log("[Index] ✅ Analysis returned:", JSON.stringify(data).slice(0, 400));
 
-      // Check if receipt is unreadable
-      const isUnreadableReceipt =
-        (!data.receipt_number || data.receipt_number === "N/A") && Number(data.total_area ?? 0) === 0;
-
-      if (isUnreadableReceipt) {
+      // Check if unreadable
+      if ((!data.receipt_number || data.receipt_number === "N/A") && Number(data.total_area ?? 0) === 0) {
         const errMsg = data.notes || "تعذر قراءة الإيصال بوضوح، أعد التصوير بإضاءة أفضل.";
-        console.warn("[Index] ⚠ Unreadable receipt:", errMsg);
         updateItem(itemId, { status: "error", error: errMsg });
         toast.error(errMsg);
         return;
       }
 
-      // Check duplicate
-      console.log("[Index] 🔍 Checking for duplicate:", data.receipt_number);
-      if (data.receipt_number) {
-        try {
-          const { data: existing, error: dupError } = await supabase
-            .from("receipts")
-            .select("id")
-            .eq("receipt_number", data.receipt_number)
-            .maybeSingle();
-
-          if (dupError) {
-            console.warn("[Index] ⚠ Duplicate check error (ignoring):", dupError.message);
-          }
-
-          if (existing) {
-            console.warn("[Index] ⚠ Duplicate receipt:", data.receipt_number);
-            updateItem(itemId, { status: "duplicate" });
-            if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-            toast.error(`إيصال مكرر: ${data.receipt_number}`);
-            return;
-          }
-        } catch (dupErr) {
-          console.warn("[Index] ⚠ Duplicate check exception (ignoring):", dupErr);
-        }
-      }
-
+      // Build receipt data
       const receiptData: ReceiptData = {
         receiptNumber: data.receipt_number || `RC-${Date.now()}`,
         clientName: data.client_name || "غير محدد",
@@ -126,11 +91,30 @@ const Index = () => {
         items: data.items,
       };
 
-      console.log("[Index] ✅ Receipt parsed:", receiptData.receiptNumber, "area:", receiptData.totalArea, "commission:", receiptData.commission);
+      // ---- STEP 2: Show results IMMEDIATELY ----
+      console.log("[Index] ✅ Showing results NOW:", receiptData.receiptNumber);
       updateItem(itemId, { status: "analyzed", receiptData });
       if (navigator.vibrate) navigator.vibrate(100);
       toast.success(`تم تحليل الإيصال: ${receiptData.totalArea} م²`);
 
+      // ---- STEP 3: Non-blocking duplicate check (just warn, don't block) ----
+      if (data.receipt_number) {
+        try {
+          const { data: existing } = await supabase
+            .from("receipts")
+            .select("id")
+            .eq("receipt_number", data.receipt_number)
+            .maybeSingle();
+          if (existing) {
+            console.warn("[Index] ⚠ Duplicate found:", data.receipt_number);
+            updateItem(itemId, { status: "duplicate", receiptData });
+            toast.error(`إيصال مكرر: ${data.receipt_number}`);
+          }
+        } catch (dupErr) {
+          console.warn("[Index] ⚠ Duplicate check failed (ignoring):", dupErr);
+          // Don't change status - keep showing results
+        }
+      }
     } catch (e) {
       console.error("[Index] ❌ Processing error:", e);
       const errMsg = e instanceof Error ? e.message : "حدث خطأ أثناء المعالجة";
@@ -138,30 +122,26 @@ const Index = () => {
       toast.error(errMsg);
     } finally {
       processingRef.current = false;
-      console.log("[Index] ■ Processing complete for:", itemId);
-      // Process next item if any
+      console.log("[Index] ■ DONE processing:", itemId);
+      // Check for more items
       setTimeout(() => {
-        setQueue(q => {
-          if (q.some(i => i.status === "queued")) {
-            setTimeout(() => processNextItem(), 100);
-          }
-          return q;
-        });
+        if (queueRef.current.some(i => i.status === "queued")) {
+          processNextItem();
+        }
       }, 200);
     }
   }, [user, updateItem]);
 
   // Trigger processing when queue changes
   useEffect(() => {
-    const hasQueued = queue.some(i => i.status === "queued");
-    if (hasQueued && !processingRef.current) {
-      const timer = setTimeout(processNextItem, 300);
-      return () => clearTimeout(timer);
+    if (queue.some(i => i.status === "queued") && !processingRef.current) {
+      const t = setTimeout(processNextItem, 200);
+      return () => clearTimeout(t);
     }
   }, [queue, processNextItem]);
 
   const handleCapture = (imageData: string) => {
-    console.log("[Index] 📸 Image captured, length:", imageData.length);
+    console.log("[Index] 📸 Captured image, length:", imageData.length);
     const newItem: QueueItem = {
       id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       imageData,
@@ -181,11 +161,13 @@ const Index = () => {
     const itemId = selectedQueueItem.id;
     const imageData = selectedQueueItem.imageData;
     console.log("[Index] 💾 Saving receipt:", data.receiptNumber);
+    updateItem(itemId, { status: "saving" });
 
     try {
-      let imageUrl = null;
+      // Upload image
+      let imageUrl: string | null = null;
       const fileName = `${user.id}/${data.receiptNumber}-${Date.now()}.jpg`;
-      const base64Data = imageData.split(",")[1];
+      const base64Data = imageData.includes(",") ? imageData.split(",")[1] : imageData;
       if (base64Data) {
         const binaryStr = atob(base64Data);
         const bytes = new Uint8Array(binaryStr.length);
@@ -200,6 +182,7 @@ const Index = () => {
         }
       }
 
+      // Save to DB
       const { error } = await supabase.from("receipts").insert({
         receipt_number: data.receiptNumber,
         designer_id: user.id,
@@ -212,7 +195,13 @@ const Index = () => {
 
       if (error) {
         console.error("[Index] ❌ Save error:", error);
-        toast.error(error.code === "23505" ? "إيصال مكرر!" : `خطأ في الحفظ: ${error.message}`);
+        if (error.code === "23505") {
+          updateItem(itemId, { status: "duplicate" });
+          toast.error("إيصال مكرر!");
+        } else {
+          updateItem(itemId, { status: "error", error: `خطأ في الحفظ: ${error.message}` });
+          toast.error(`خطأ في الحفظ: ${error.message}`);
+        }
         return;
       }
 
@@ -221,17 +210,19 @@ const Index = () => {
       setSelectedId(null);
     } catch (err) {
       console.error("[Index] ❌ Save exception:", err);
-      toast.error("حدث خطأ أثناء الحفظ");
+      const msg = err instanceof Error ? err.message : "حدث خطأ أثناء الحفظ";
+      updateItem(itemId, { status: "error", error: msg });
+      toast.error(msg);
     }
   };
 
   const handleRetry = useCallback(() => {
     if (!selectedId) return;
-    console.log("[Index] 🔄 Retrying item:", selectedId);
+    console.log("[Index] 🔄 Retrying:", selectedId);
     updateItem(selectedId, { status: "queued", error: undefined, receiptData: undefined });
   }, [selectedId, updateItem]);
 
-  // Clean done items after 15 seconds
+  // Clean done items after 15s
   useEffect(() => {
     const timer = setInterval(() => {
       setQueue(prev => prev.filter(i => {
@@ -282,7 +273,8 @@ const Index = () => {
           onConfirm={handleManualConfirm}
           onRetry={handleRetry}
           data={selectedQueueItem.receiptData || null}
-          isProcessing={["queued", "analyzing"].includes(selectedQueueItem.status)}
+          isProcessing={selectedQueueItem.status === "queued" || selectedQueueItem.status === "analyzing"}
+          isSaving={selectedQueueItem.status === "saving"}
           isDuplicate={selectedQueueItem.status === "duplicate"}
           errorMessage={selectedQueueItem.status === "error" ? (selectedQueueItem.error || "حدث خطأ") : null}
           capturedImage={selectedQueueItem.imageData}
