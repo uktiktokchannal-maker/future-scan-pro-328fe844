@@ -1,4 +1,4 @@
-import { X, Check, Pencil, AlertTriangle, RefreshCw } from "lucide-react";
+import { X, Check, Pencil, AlertTriangle, RefreshCw, Loader2 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import { Progress } from "@/components/ui/progress";
 
@@ -20,12 +20,13 @@ interface ReceiptDrawerProps {
   onRetry?: () => void;
   data: ReceiptData | null;
   isProcessing: boolean;
+  isSaving?: boolean;
   isDuplicate?: boolean;
   errorMessage?: string | null;
   capturedImage?: string | null;
 }
 
-const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing, isDuplicate, errorMessage, capturedImage }: ReceiptDrawerProps) => {
+const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing, isSaving, isDuplicate, errorMessage, capturedImage }: ReceiptDrawerProps) => {
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editedData, setEditedData] = useState<ReceiptData | null>(null);
   const [progress, setProgress] = useState(0);
@@ -41,46 +42,35 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing
       return;
     }
     setElapsedSeconds(0);
-    const interval = setInterval(() => {
-      setElapsedSeconds(prev => prev + 1);
-    }, 1000);
+    const interval = setInterval(() => setElapsedSeconds(prev => prev + 1), 1000);
     return () => clearInterval(interval);
   }, [isProcessing]);
 
-  // Progress bar animation during processing
+  // Progress bar animation
   useEffect(() => {
-    if (!isProcessing) {
-      setProgress(100);
-      return;
-    }
+    if (!isProcessing) { setProgress(100); return; }
     setProgress(0);
     const interval = setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 90) return prev;
-        return prev + Math.random() * 15;
-      });
+      setProgress(prev => prev >= 90 ? prev : prev + Math.random() * 15);
     }, 200);
     return () => clearInterval(interval);
   }, [isProcessing]);
 
-  // Auto-save countdown (5 seconds)
+  // Auto-save countdown
   useEffect(() => {
-    if (!currentData || isProcessing || isDuplicate || errorMessage) {
+    if (!currentData || isProcessing || isSaving || isDuplicate || errorMessage) {
       setAutoSaveCountdown(null);
       return;
     }
     setAutoSaveCountdown(5);
     const interval = setInterval(() => {
       setAutoSaveCountdown(prev => {
-        if (prev === null || prev <= 1) {
-          clearInterval(interval);
-          return 0;
-        }
+        if (prev === null || prev <= 1) { clearInterval(interval); return 0; }
         return prev - 1;
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, [currentData, isProcessing, isDuplicate, errorMessage]);
+  }, [currentData, isProcessing, isSaving, isDuplicate, errorMessage]);
 
   const handleConfirm = useCallback(() => {
     if (currentData) {
@@ -91,10 +81,10 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing
 
   // Auto-save when countdown reaches 0
   useEffect(() => {
-    if (autoSaveCountdown === 0 && currentData && !isProcessing && !isDuplicate && !errorMessage) {
+    if (autoSaveCountdown === 0 && currentData && !isProcessing && !isSaving && !isDuplicate && !errorMessage) {
       handleConfirm();
     }
-  }, [autoSaveCountdown, currentData, isProcessing, isDuplicate, errorMessage, handleConfirm]);
+  }, [autoSaveCountdown, currentData, isProcessing, isSaving, isDuplicate, errorMessage, handleConfirm]);
 
   // Haptic on successful read
   useEffect(() => {
@@ -143,6 +133,7 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing
               </button>
             </div>
 
+            {/* STATE: Processing / Analyzing */}
             {isProcessing ? (
               <div className="flex flex-col items-center py-8 gap-4">
                 {capturedImage && (
@@ -160,6 +151,15 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing
                   إلغاء
                 </button>
               </div>
+
+            /* STATE: Saving */
+            ) : isSaving ? (
+              <div className="flex flex-col items-center py-8 gap-4">
+                <Loader2 className="h-10 w-10 text-primary animate-spin" />
+                <p className="text-muted-foreground text-sm">جاري حفظ الإيصال...</p>
+              </div>
+
+            /* STATE: Duplicate */
             ) : isDuplicate ? (
               <div className="flex flex-col items-center py-8 gap-4">
                 <div className="w-16 h-16 rounded-full bg-destructive/20 flex items-center justify-center">
@@ -171,6 +171,8 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing
                 </p>
                 <button onClick={onClose} className="w-full py-3 rounded-xl bg-muted text-foreground font-bold mt-4">إغلاق</button>
               </div>
+
+            /* STATE: Error */
             ) : errorMessage ? (
               <div className="flex flex-col items-center py-8 gap-4">
                 {capturedImage && (
@@ -192,6 +194,8 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing
                   <button onClick={onClose} className={`${onRetry ? 'flex-1' : 'w-full'} py-3 rounded-xl bg-muted text-foreground font-bold`}>إغلاق</button>
                 </div>
               </div>
+
+            /* STATE: Data ready */
             ) : currentData ? (
               <>
                 <div className="flex items-center justify-between mb-3">
@@ -209,9 +213,7 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing
                   <div className="glass-card rounded-2xl p-4 text-center">
                     <p className="text-xs text-muted-foreground mb-1">الأمتار</p>
                     {editingField === "area" ? (
-                      <input
-                        type="number"
-                        defaultValue={currentData.totalArea}
+                      <input type="number" defaultValue={currentData.totalArea}
                         className="w-full text-center text-xl font-bold bg-transparent border-b border-primary outline-none text-primary"
                         autoFocus
                         onBlur={(e) => handleEditField("area", parseFloat(e.target.value) || 0)}
@@ -230,9 +232,7 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing
                   <div className="glass-card rounded-2xl p-4 text-center">
                     <p className="text-xs text-muted-foreground mb-1">العمولة</p>
                     {editingField === "commission" ? (
-                      <input
-                        type="number"
-                        defaultValue={currentData.commission}
+                      <input type="number" defaultValue={currentData.commission}
                         className="w-full text-center text-xl font-bold bg-transparent border-b border-success outline-none text-success"
                         autoFocus
                         onBlur={(e) => handleEditField("commission", parseFloat(e.target.value) || 0)}
