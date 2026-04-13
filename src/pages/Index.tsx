@@ -33,40 +33,49 @@ const Index = () => {
   const { user, profile, signOut } = useAuth();
   const [activeTab, setActiveTab] = useState<"scanner" | "wallet" | "profile">("scanner");
   const [queue, setQueue] = useState<QueueItem[]>([]);
-  const [selectedItem, setSelectedItem] = useState<QueueItem | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const processingRef = useRef(false);
-  const queueRef = useRef<QueueItem[]>([]);
 
-  // Keep a live reference of selectedItem for the drawer
-  const selectedQueueItem = selectedItem ? queue.find(item => item.id === selectedItem.id) ?? selectedItem : null;
+  // Derive selectedItem from queue - single source of truth
+  const selectedQueueItem = selectedId ? queue.find(item => item.id === selectedId) ?? null : null;
 
   const updateItem = useCallback((id: string, updates: Partial<QueueItem>) => {
+    console.log("[Index] 📝 updateItem:", id, "→", updates.status || "no status change");
     setQueue(q => q.map(i => i.id === id ? { ...i, ...updates } : i));
   }, []);
 
-  useEffect(() => {
-    queueRef.current = queue;
-  }, [queue]);
-
   const processNextItem = useCallback(async () => {
-    if (processingRef.current || !user) return;
+    if (processingRef.current || !user) {
+      console.log("[Index] ⏸ processNextItem skipped:", processingRef.current ? "already processing" : "no user");
+      return;
+    }
 
-    const nextItem = queueRef.current.find(i => i.status === "queued");
-    if (!nextItem) return;
+    // Read current queue directly from state setter to avoid stale closure
+    let nextItem: QueueItem | undefined;
+    setQueue(q => {
+      nextItem = q.find(i => i.status === "queued");
+      return q; // no change
+    });
+
+    // Small delay to let the state setter run
+    await new Promise(r => setTimeout(r, 50));
+
+    if (!nextItem) {
+      console.log("[Index] ⏸ No queued items");
+      return;
+    }
 
     processingRef.current = true;
     const itemId = nextItem.id;
     console.log("[Index] ▶ Processing item:", itemId);
 
     try {
-      // Update status to analyzing and show drawer
       updateItem(itemId, { status: "analyzing" });
-      setSelectedItem({ ...nextItem, status: "analyzing" });
+      setSelectedId(itemId);
 
-      // Call AI analysis
-      console.log("[Index] Calling analyzeReceiptImage...");
+      console.log("[Index] 📤 Calling analyzeReceiptImage...");
       const data = await analyzeReceiptImage(nextItem.imageData);
-      console.log("[Index] ✅ Analysis result:", JSON.stringify(data).slice(0, 200));
+      console.log("[Index] ✅ Analysis result:", JSON.stringify(data).slice(0, 300));
 
       // Check if receipt is unreadable
       const isUnreadableReceipt =
@@ -76,28 +85,33 @@ const Index = () => {
         const errMsg = data.notes || "تعذر قراءة الإيصال بوضوح، أعد التصوير بإضاءة أفضل.";
         console.warn("[Index] ⚠ Unreadable receipt:", errMsg);
         updateItem(itemId, { status: "error", error: errMsg });
-        setSelectedItem(prev => prev?.id === itemId ? { ...prev, status: "error", error: errMsg } : prev);
         toast.error(errMsg);
-        processingRef.current = false;
         return;
       }
 
       // Check duplicate
+      console.log("[Index] 🔍 Checking for duplicate:", data.receipt_number);
       if (data.receipt_number) {
-        const { data: existing } = await supabase
-          .from("receipts")
-          .select("id")
-          .eq("receipt_number", data.receipt_number)
-          .maybeSingle();
+        try {
+          const { data: existing, error: dupError } = await supabase
+            .from("receipts")
+            .select("id")
+            .eq("receipt_number", data.receipt_number)
+            .maybeSingle();
 
-        if (existing) {
-          console.warn("[Index] ⚠ Duplicate receipt:", data.receipt_number);
-          updateItem(itemId, { status: "duplicate" });
-          setSelectedItem(prev => prev?.id === itemId ? { ...prev, status: "duplicate" } : prev);
-          if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-          toast.error(`إيصال مكرر: ${data.receipt_number}`);
-          processingRef.current = false;
-          return;
+          if (dupError) {
+            console.warn("[Index] ⚠ Duplicate check error (ignoring):", dupError.message);
+          }
+
+          if (existing) {
+            console.warn("[Index] ⚠ Duplicate receipt:", data.receipt_number);
+            updateItem(itemId, { status: "duplicate" });
+            if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+            toast.error(`إيصال مكرر: ${data.receipt_number}`);
+            return;
+          }
+        } catch (dupErr) {
+          console.warn("[Index] ⚠ Duplicate check exception (ignoring):", dupErr);
         }
       }
 
@@ -112,20 +126,28 @@ const Index = () => {
         items: data.items,
       };
 
-      console.log("[Index] Receipt parsed:", receiptData.receiptNumber, "area:", receiptData.totalArea);
+      console.log("[Index] ✅ Receipt parsed:", receiptData.receiptNumber, "area:", receiptData.totalArea, "commission:", receiptData.commission);
       updateItem(itemId, { status: "analyzed", receiptData });
-      setSelectedItem(prev => prev?.id === itemId ? { ...prev, status: "analyzed", receiptData } : prev);
       if (navigator.vibrate) navigator.vibrate(100);
+      toast.success(`تم تحليل الإيصال: ${receiptData.totalArea} م²`);
 
     } catch (e) {
       console.error("[Index] ❌ Processing error:", e);
       const errMsg = e instanceof Error ? e.message : "حدث خطأ أثناء المعالجة";
       updateItem(itemId, { status: "error", error: errMsg });
-      setSelectedItem(prev => prev?.id === itemId ? { ...prev, status: "error", error: errMsg } : prev);
       toast.error(errMsg);
     } finally {
       processingRef.current = false;
       console.log("[Index] ■ Processing complete for:", itemId);
+      // Process next item if any
+      setTimeout(() => {
+        setQueue(q => {
+          if (q.some(i => i.status === "queued")) {
+            setTimeout(() => processNextItem(), 100);
+          }
+          return q;
+        });
+      }, 200);
     }
   }, [user, updateItem]);
 
@@ -133,7 +155,7 @@ const Index = () => {
   useEffect(() => {
     const hasQueued = queue.some(i => i.status === "queued");
     if (hasQueued && !processingRef.current) {
-      const timer = setTimeout(processNextItem, 200);
+      const timer = setTimeout(processNextItem, 300);
       return () => clearTimeout(timer);
     }
   }, [queue, processNextItem]);
@@ -146,21 +168,24 @@ const Index = () => {
       status: "queued",
     };
     setQueue(prev => [...prev, newItem]);
-    // Immediately show drawer for this item
-    setSelectedItem(newItem);
+    setSelectedId(newItem.id);
   };
 
   const handleReviewItem = (item: QueueItem) => {
-    setSelectedItem(item);
+    setSelectedId(item.id);
   };
 
   const handleManualConfirm = async (data: ReceiptData) => {
-    if (!user || !selectedItem) return;
+    if (!user || !selectedQueueItem) return;
+
+    const itemId = selectedQueueItem.id;
+    const imageData = selectedQueueItem.imageData;
+    console.log("[Index] 💾 Saving receipt:", data.receiptNumber);
 
     try {
       let imageUrl = null;
       const fileName = `${user.id}/${data.receiptNumber}-${Date.now()}.jpg`;
-      const base64Data = selectedItem.imageData.split(",")[1];
+      const base64Data = imageData.split(",")[1];
       if (base64Data) {
         const binaryStr = atob(base64Data);
         const bytes = new Uint8Array(binaryStr.length);
@@ -186,24 +211,25 @@ const Index = () => {
       });
 
       if (error) {
-        toast.error(error.code === "23505" ? "إيصال مكرر!" : "خطأ في الحفظ");
+        console.error("[Index] ❌ Save error:", error);
+        toast.error(error.code === "23505" ? "إيصال مكرر!" : `خطأ في الحفظ: ${error.message}`);
         return;
       }
 
-      updateItem(selectedItem.id, { status: "done", receiptData: data });
+      updateItem(itemId, { status: "done", receiptData: data });
       toast.success("تم حفظ الإيصال بنجاح ✅");
-      setSelectedItem(null);
-    } catch {
+      setSelectedId(null);
+    } catch (err) {
+      console.error("[Index] ❌ Save exception:", err);
       toast.error("حدث خطأ أثناء الحفظ");
     }
   };
 
   const handleRetry = useCallback(() => {
-    if (!selectedItem) return;
-    console.log("[Index] 🔄 Retrying item:", selectedItem.id);
-    updateItem(selectedItem.id, { status: "queued", error: undefined });
-    setSelectedItem(prev => prev ? { ...prev, status: "queued", error: undefined } : null);
-  }, [selectedItem, updateItem]);
+    if (!selectedId) return;
+    console.log("[Index] 🔄 Retrying item:", selectedId);
+    updateItem(selectedId, { status: "queued", error: undefined, receiptData: undefined });
+  }, [selectedId, updateItem]);
 
   // Clean done items after 15 seconds
   useEffect(() => {
@@ -252,7 +278,7 @@ const Index = () => {
       {selectedQueueItem && (
         <ReceiptDrawer
           isOpen={true}
-          onClose={() => setSelectedItem(null)}
+          onClose={() => setSelectedId(null)}
           onConfirm={handleManualConfirm}
           onRetry={handleRetry}
           data={selectedQueueItem.receiptData || null}
