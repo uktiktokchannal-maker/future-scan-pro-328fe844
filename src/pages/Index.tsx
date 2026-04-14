@@ -162,8 +162,11 @@ const Index = () => {
         const bytes = new Uint8Array(binaryStr.length);
         for (let j = 0; j < binaryStr.length; j++) bytes[j] = binaryStr.charCodeAt(j);
 
+        const uploadTask = async () =>
+          await supabase.storage.from("receipt-images").upload(fileName, bytes, { contentType: "image/jpeg" });
+
         const { data: uploadData, error: uploadError } = await withTimeout(
-          supabase.storage.from("receipt-images").upload(fileName, bytes, { contentType: "image/jpeg" }),
+          uploadTask(),
           IMAGE_UPLOAD_TIMEOUT_MS,
           "استغرق رفع صورة الإيصال وقتاً أطول من المتوقع"
         );
@@ -176,8 +179,8 @@ const Index = () => {
         }
       }
 
-      const { error } = await withTimeout(
-        supabase.from("receipts").insert({
+      const insertTask = async () =>
+        await supabase.from("receipts").insert({
           receipt_number: data.receiptNumber,
           designer_id: user.id,
           client_name: data.clientName,
@@ -185,7 +188,10 @@ const Index = () => {
           commission_amount: data.commission,
           image_url: imageUrl,
           receipt_date: new Date().toISOString().split("T")[0],
-        }),
+        });
+
+      const { error } = await withTimeout(
+        insertTask(),
         RECEIPT_INSERT_TIMEOUT_MS,
         "استغرق حفظ الإيصال وقتاً أطول من المتوقع"
       );
