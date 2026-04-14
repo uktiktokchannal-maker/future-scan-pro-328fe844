@@ -1,17 +1,7 @@
 import { X, Check, Pencil, AlertTriangle, RefreshCw, Loader2 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import { Progress } from "@/components/ui/progress";
-
-interface ReceiptData {
-  receiptNumber: string;
-  clientName: string;
-  date: string;
-  totalArea: number;
-  commission: number;
-  analysisPath?: string;
-  notes?: string;
-  items?: Array<{ description?: string; area_m2?: number; quantity?: number; total_area_m2?: number }>;
-}
+import type { ReceiptData } from "@/types/receipt-queue";
 
 interface ReceiptDrawerProps {
   isOpen: boolean;
@@ -24,9 +14,10 @@ interface ReceiptDrawerProps {
   isDuplicate?: boolean;
   errorMessage?: string | null;
   capturedImage?: string | null;
+  processingLabel?: string;
 }
 
-const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing, isSaving, isDuplicate, errorMessage, capturedImage }: ReceiptDrawerProps) => {
+const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing, isSaving, isDuplicate, errorMessage, capturedImage, processingLabel }: ReceiptDrawerProps) => {
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editedData, setEditedData] = useState<ReceiptData | null>(null);
   const [progress, setProgress] = useState(0);
@@ -34,6 +25,11 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const currentData = editedData || data;
+
+  useEffect(() => {
+    setEditedData(data);
+    setEditingField(null);
+  }, [data]);
 
   // Elapsed time counter during processing
   useEffect(() => {
@@ -145,7 +141,7 @@ const ReceiptDrawer = ({ isOpen, onClose, onConfirm, onRetry, data, isProcessing
                   mask: "conic-gradient(transparent 30%, black)",
                   WebkitMask: "conic-gradient(transparent 30%, black)",
                 }} />
-                <p className="text-muted-foreground text-sm">المحاسب الذكي يحلل الإيصال...</p>
+                <p className="text-muted-foreground text-sm">{processingLabel || "المحاسب الذكي يحلل الإيصال..."}</p>
                 <p className="text-xs text-muted-foreground/60">{elapsedSeconds} ثانية</p>
                 <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground transition-colors mt-2">
                   إلغاء

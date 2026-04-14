@@ -1,3 +1,5 @@
+import { supabase } from "@/integrations/supabase/client";
+
 const ANALYZE_RECEIPT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-receipt`;
 const ANALYSIS_TIMEOUT_MS = 45_000; // 45 seconds
 const PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -25,11 +27,15 @@ export const analyzeReceiptImage = async (imageBase64: string): Promise<AnalyzeR
 
   try {
     if (!imageBase64) throw new Error("لم يتم إرسال صورة الإيصال للتحليل");
+    if (!PUBLISHABLE_KEY) throw new Error("تعذر تهيئة الاتصال بخدمة التحليل");
 
     // Strip data URL prefix
     let rawBase64 = imageBase64;
     if (rawBase64.includes(",")) rawBase64 = rawBase64.split(",")[1];
     if (!rawBase64 || rawBase64.length < 100) throw new Error("الصورة فارغة أو تالفة، أعد التصوير");
+
+    const { data: authData } = await supabase.auth.getSession();
+    const accessToken = authData.session?.access_token || PUBLISHABLE_KEY;
 
     console.log("[receipt-analysis] Sending to analyze-receipt, base64 length:", rawBase64.length);
     const startTime = Date.now();
@@ -39,7 +45,7 @@ export const analyzeReceiptImage = async (imageBase64: string): Promise<AnalyzeR
       headers: {
         "Content-Type": "application/json",
         apikey: PUBLISHABLE_KEY,
-        Authorization: `Bearer ${PUBLISHABLE_KEY}`,
+        Authorization: `Bearer ${accessToken}`,
       },
       body: JSON.stringify({ image_base64: rawBase64 }),
       signal: controller.signal,
