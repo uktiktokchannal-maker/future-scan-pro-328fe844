@@ -1,6 +1,6 @@
 import { CheckCircle, Loader2, AlertTriangle, XCircle, ChevronUp, ChevronDown } from "lucide-react";
 import { useState } from "react";
-import type { QueueItem } from "@/pages/Index";
+import type { QueueItem } from "@/types/receipt-queue";
 
 interface QueueIndicatorProps {
   queue: QueueItem[];
@@ -10,7 +10,7 @@ interface QueueIndicatorProps {
 const statusConfig = {
   queued: { icon: Loader2, color: "text-muted-foreground", label: "في الانتظار", spin: false },
   analyzing: { icon: Loader2, color: "text-primary", label: "جاري التحليل", spin: true },
-  analyzed: { icon: CheckCircle, color: "text-primary", label: "تم التحليل", spin: false },
+  ready: { icon: CheckCircle, color: "text-primary", label: "جاهز للمراجعة", spin: false },
   saving: { icon: Loader2, color: "text-accent", label: "جاري الحفظ", spin: true },
   done: { icon: CheckCircle, color: "text-success", label: "تم ✅", spin: false },
   error: { icon: XCircle, color: "text-destructive", label: "خطأ", spin: false },
@@ -20,7 +20,7 @@ const statusConfig = {
 const QueueIndicator = ({ queue, onReview }: QueueIndicatorProps) => {
   const [expanded, setExpanded] = useState(false);
 
-  const activeCount = queue.filter(i => ["queued", "analyzing", "saving"].includes(i.status)).length;
+  const activeCount = queue.filter(i => ["queued", "analyzing", "ready", "saving"].includes(i.status)).length;
   const doneCount = queue.filter(i => i.status === "done").length;
   const errorCount = queue.filter(i => ["error", "duplicate"].includes(i.status)).length;
 
@@ -66,7 +66,7 @@ const QueueIndicator = ({ queue, onReview }: QueueIndicatorProps) => {
             return (
               <button
                 key={item.id}
-                onClick={() => item.receiptData && onReview(item)}
+                onClick={() => onReview(item)}
                 className="w-full flex items-center gap-3 px-4 py-3 border-b border-border/30 last:border-0 hover:bg-muted/30 transition-colors text-right"
               >
                 <Icon className={`h-4 w-4 ${cfg.color} flex-shrink-0 ${cfg.spin ? "animate-spin" : ""}`} />
